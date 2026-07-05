@@ -1,0 +1,12 @@
+# 경로 단일 정의 — 모든 스크립트는 이 파일을 읽는다.
+# 데이터는 원본 위치를 그대로 참조한다 (OneDrive에서 41k 파일 이동 금지).
+data_dir: snuaichallenge/snuaichallenge_data
+train_csv: snuaichallenge/snuaichallenge_data/train.csv
+test_csv: snuaichallenge/snuaichallenge_data/test.csv
+sample_submission: snuaichallenge/snuaichallenge_data/sample_submission.csv
+train_image_dir: snuaichallenge/snuaichallenge_data/train
+test_image_dir: snuaichallenge/snuaichallenge_data/test
+
+models_dir: models        # 사전 다운로드 가중치 (오프라인 로딩용)
+outputs_dir: outputs      # submission, 체크포인트, 전처리 산출물
+reports_dir: reports

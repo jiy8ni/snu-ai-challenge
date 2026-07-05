@@ -1,0 +1,37 @@
+# Track B (Qwen2.5-VL-3B QLoRA SFT, Unsloth/T4) 학습 설정
+model: unsloth/Qwen2.5-VL-3B-Instruct   # 4bit 프리팩. 원본 공개 2025-01 (<=2026-05-31)
+load_in_4bit: true                       # nf4, compute dtype fp16 (T4)
+output_dir: /kaggle/working/outputs/qwen25vl3b
+
+pixels:
+  min: 25088      # 32 * 28 * 28  — 작은 프레임 강제 업스케일 방지
+  max: 250880     # 320 * 28 * 28 — 640x360도 native, 이상치만 캡. OOM 시 200704(256*28^2)
+
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0.0
+  finetune_vision_layers: true
+  finetune_language_layers: true
+  finetune_attention_modules: true
+  finetune_mlp_modules: true
+
+train:
+  epochs: 2
+  per_device_batch: 1            # T4 14.5GB에서 배치 2는 OOM (2026-07-05 실측)
+  grad_accum: 16                 # 유효 배치 16 유지
+  lr: 1.0e-4
+  scheduler: cosine
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 0.3             # fp16 안정화: 낮게 시작
+  max_seq_len: 2048
+  seed: 42
+  save_steps: 200                # 세션 12h 초과 대비 체크포인트
+  logging_steps: 10
+  train_on_responses_only: true
+
+data:
+  style: mid                     # cot | mid | short (W2 ablation으로 확정)
+  letterbox_crop: true
+  perm_augment: true

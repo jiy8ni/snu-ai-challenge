@@ -1,0 +1,24 @@
+# Track A (동결 SigLIP2 + Set-to-Rank 헤드) 하이퍼파라미터
+variant: crop          # 임베딩 변형: crop | nocrop
+d_model: 256
+n_layers: 3
+n_heads: 8
+d_ffn: 512
+dropout: 0.1
+use_events: true
+use_scalars: true
+
+lr: 3.0e-4
+weight_decay: 0.05
+batch_size: 256
+epochs: 80
+patience: 10
+min_epochs: 20         # EM이 identity 하한(계단형)에서 벗어나기 전 조기 종료 방지
+label_smoothing: 0.05
+aux_w: 0.5             # 프레임 단위 보조 CE 가중치
+gate_w: 1.0            # UNORDERABLE 게이트 BCE 가중치
+noise_policy: c        # a=제외 | b=가중 하향 | c=유지
+noise_weight: 0.5
+ban_identity: false    # identity 금지 디코딩은 게이트가 약할 때 역효과 (decode-ablation 실측)
+cv_folds: 5
+seed: 42

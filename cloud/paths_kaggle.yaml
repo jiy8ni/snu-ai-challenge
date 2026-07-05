@@ -1,0 +1,13 @@
+# Kaggle 노트북용 경로 정의. 노트북에서:
+#   os.environ["SNUAI_PATHS_CONFIG"] = f"{CODE}/kaggle/paths_kaggle.yaml"
+# <COMPETITION-SLUG>를 실제 대회 데이터 attach 경로로 교체할 것
+# (노트북에서 `ls /kaggle/input/`으로 확인).
+data_dir: /kaggle/input/<COMPETITION-SLUG>
+train_csv: /kaggle/input/<COMPETITION-SLUG>/train.csv
+test_csv: /kaggle/input/<COMPETITION-SLUG>/test.csv
+sample_submission: /kaggle/input/<COMPETITION-SLUG>/sample_submission.csv
+train_image_dir: /kaggle/input/<COMPETITION-SLUG>/train
+test_image_dir: /kaggle/input/<COMPETITION-SLUG>/test
+models_dir: /kaggle/working/models
+outputs_dir: /kaggle/working/outputs
+reports_dir: /kaggle/working/reports
