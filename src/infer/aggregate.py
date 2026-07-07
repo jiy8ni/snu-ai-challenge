@@ -39,14 +39,20 @@ def parse_vote(text, perm):
     return "orderable", unshuffle_rank_label(rank, perm)
 
 
-def aggregate_votes(votes, ban_identity=False, disperse_gate=True):
+def aggregate_votes(votes, ban_identity=False, disperse_gate=True,
+                    disperse_top=1, identity_quota=None):
     """votes: (kind, rank) 리스트 -> (최종 rank, 결정 사유).
 
     기본 정책은 2026-07-05 Track B val 스윕으로 확정 (0.3924 -> 0.4439):
       - ban_identity=False: identity 금지는 -4.2pp 해악 (게이트 약할 때 역효과
         — Track A reports/preprocessing.md 관측과 동일)
-      - disperse_gate=True: 투표 간 합의가 전무(최빈 표수 1)하면 모델이 순서를
-        못 찾는 샘플로 보고 identity. 유효 표가 1표뿐인 경우도 이 게이트에 걸린다.
+      - disperse_gate=True: 투표 간 합의가 부족(최빈 표수 <= disperse_top)하면
+        모델이 순서를 못 찾는 샘플로 보고 identity. 유효 표가 1표뿐인 경우도 걸린다.
+      - disperse_top: 게이트 문턱. tta4 확정값은 1. tta8은 "top==1"이 거의 안
+        나와 게이트가 실종되므로 (2026-07-07 실측: 발동 70->0, em_no_ordering
+        -10pp) 표 수에 맞춰 val로 재튜닝한다.
+      - identity_quota: identity 표가 이 수 이상이면 최빈과 무관하게 identity
+        (None=off). identity 표는 no_ordering의 강한 신호(gate_precision 0.95).
     """
     valid = [(k, r) for k, r in votes if k != "fail"]
     if not valid:
@@ -60,6 +66,9 @@ def aggregate_votes(votes, ban_identity=False, disperse_gate=True):
     if not ranks:
         return list(IDENTITY), "unorderable_only"
 
+    if identity_quota and sum(r == list(IDENTITY) for r in ranks) >= identity_quota:
+        return list(IDENTITY), "identity_quota"
+
     counts = Counter(tuple(r) for r in ranks)
     if ban_identity:
         counts = Counter({r: c for r, c in counts.items() if list(r) != IDENTITY})
@@ -67,7 +76,7 @@ def aggregate_votes(votes, ban_identity=False, disperse_gate=True):
             return list(IDENTITY), "all_identity_votes"
 
     top = max(counts.values())
-    if disperse_gate and top == 1:
+    if disperse_gate and top <= disperse_top:
         return list(IDENTITY), "disperse_gate"
 
     tied = sorted(r for r, c in counts.items() if c == top)
@@ -79,7 +88,8 @@ def aggregate_votes(votes, ban_identity=False, disperse_gate=True):
     return list(best), "borda_tie"
 
 
-def aggregate_file(raw_path, ban_identity=False, disperse_gate=True):
+def aggregate_file(raw_path, ban_identity=False, disperse_gate=True,
+                   disperse_top=1, identity_quota=None):
     """raw jsonl -> (pred_by_id, 통계 dict)."""
     by_id = defaultdict(list)
     with open(raw_path, encoding="utf-8") as f:
@@ -92,7 +102,8 @@ def aggregate_file(raw_path, ban_identity=False, disperse_gate=True):
     for sid, votes in by_id.items():
         n_votes += len(votes)
         n_fail += sum(1 for k, _ in votes if k == "fail")
-        preds[sid], reason = aggregate_votes(votes, ban_identity, disperse_gate)
+        preds[sid], reason = aggregate_votes(
+            votes, ban_identity, disperse_gate, disperse_top, identity_quota)
         reasons[reason] += 1
 
     stats = {
@@ -112,10 +123,15 @@ def main():
     ap.add_argument("--submission", default=None, help="검증 포함 제출 CSV 생성 (test 전용)")
     ap.add_argument("--ban-identity", action="store_true", help="구 정책: identity 후보 금지")
     ap.add_argument("--no-disperse-gate", action="store_true", help="구 정책: 분산 게이트 비활성")
+    ap.add_argument("--disperse-top", type=int, default=1,
+                    help="게이트 문턱: 최빈 표수 <= 이 값이면 identity (tta4=1, tta8은 val 스윕)")
+    ap.add_argument("--identity-quota", type=int, default=None,
+                    help="identity 표가 이 수 이상이면 identity (기본 off)")
     args = ap.parse_args()
 
     preds, stats = aggregate_file(
-        args.raw, ban_identity=args.ban_identity, disperse_gate=not args.no_disperse_gate
+        args.raw, ban_identity=args.ban_identity, disperse_gate=not args.no_disperse_gate,
+        disperse_top=args.disperse_top, identity_quota=args.identity_quota,
     )
     print(json.dumps(stats, indent=2, ensure_ascii=False))
 

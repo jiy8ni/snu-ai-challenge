@@ -47,8 +47,15 @@ class VLSFTDataset:
 
     def __init__(
         self, jsonl_path, data_dir, style="mid", augment=True, crop=True, seed=42, limit=None,
+        oversample_no_ordering=1,
     ):
+        """oversample_no_ordering: no_ordering 레코드를 n배로 복제 (1=off).
+        매 __getitem__마다 perm 증강이 새로 뽑히므로 복제본도 서로 다른 뷰가 된다.
+        UNORDERABLE recall(_0705 실측 22%) 보강용 — 제공 데이터 증강이라 규정 합법."""
         self.records = load_records(jsonl_path)[: limit or None]
+        if oversample_no_ordering > 1:
+            extra = [r for r in self.records if r["no_ordering"]]
+            self.records = self.records + extra * (oversample_no_ordering - 1)
         self.data_dir = data_dir
         self.style = style
         self.augment = augment

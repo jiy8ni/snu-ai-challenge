@@ -1,7 +1,10 @@
-# Track B (Qwen2.5-VL-3B QLoRA SFT, Unsloth/T4) 학습 설정
-model: unsloth/Qwen2.5-VL-3B-Instruct   # 4bit 프리팩. 원본 공개 2025-01 (<=2026-05-31)
-load_in_4bit: true                       # nf4, compute dtype fp16 (T4)
-output_dir: /kaggle/working/outputs/qwen25vl3b
+# Track B (Qwen2.5-VL-7B QLoRA SFT, Unsloth/A100) 학습 설정 — _0707 라운드
+# _0706(LB 0.81) 대비 변경: epochs 2->3, no_ordering 오버샘플 x2 (근거: track_b_0707.md).
+# 3B(_0705, LB 0.71) 설정은 snuai_code_0705.zip에 동결. 7B는 T4 학습 불가 — A100/L4 전용.
+# 최종 환경 3090 24GB 추론: 7B bf16 ~16.6GB 적재 가능 (빠듯하면 4bit, 규정 허용).
+model: unsloth/Qwen2.5-VL-7B-Instruct   # 4bit 프리팩. 원본 공개 2025-01 (<=2026-05-31)
+load_in_4bit: true                       # nf4, compute dtype bf16 (A100)
+output_dir: /kaggle/working/outputs/qwen25vl7b
 
 pixels:
   min: 25088      # 32 * 28 * 28  — 작은 프레임 강제 업스케일 방지
@@ -17,9 +20,9 @@ lora:
   finetune_mlp_modules: true
 
 train:
-  epochs: 2
-  per_device_batch: 1            # T4 14.5GB에서 배치 2는 OOM (2026-07-05 실측)
-  grad_accum: 16                 # 유효 배치 16 유지
+  epochs: 3                      # _0707: 2 -> 3 (수렴 여유. cosine이 전체 길이에 맞춰 재스케줄됨)
+  per_device_batch: 1            # 안전 기본값. A100은 노트북 B2 OVERRIDES {2, 8}로 조정
+  grad_accum: 16                 # 유효 배치 16 고정 (3B _0705와 비교 가능성 유지)
   lr: 1.0e-4
   scheduler: cosine
   warmup_ratio: 0.03
@@ -35,3 +38,4 @@ data:
   style: mid                     # cot | mid | short (W2 ablation으로 확정)
   letterbox_crop: true
   perm_augment: true
+  oversample_no_ordering: 2      # _0707: UNORDERABLE 신호 보강 (x3 아님 — identity 과베팅 경계)

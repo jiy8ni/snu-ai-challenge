@@ -27,6 +27,50 @@ from src.utils.permutation import N_FRAMES
 
 MAX_NEW_TOKENS = {"short": 32, "mid": 64, "cot": 300}
 
+# 학습 설정(configs/sft_qwen.yaml pixels)과 동일하게 유지할 것.
+# 병합 모델의 preprocessor_config에 캡이 유실될 수 있어(2026-07-06 실측: test 대형
+# 이미지가 무제한 해상도로 처리돼 ll_score OOM) 추론 코드에서 강제한다.
+PIXELS_MIN = 25088   # 32 * 28 * 28
+PIXELS_MAX = 250880  # 320 * 28 * 28
+
+
+def cap_pixels(img, max_pixels=PIXELS_MAX):
+    """총 픽셀 수가 예산을 넘는 이미지를 비율 유지 다운스케일 (PIL 수준 보증).
+
+    processor 캡은 transformers 버전에 따라 조용히 무시될 수 있으므로
+    (구 min/max_pixels 속성 vs 신 size dict), 입력 이미지 자체를 캡 이내로
+    맞춰 토큰 예산 초과를 원천 차단한다. 업스케일은 하지 않는다.
+    """
+    n = img.width * img.height
+    if n <= max_pixels:
+        return img
+    scale = (max_pixels / n) ** 0.5
+    w = max(1, int(img.width * scale))
+    h = max(1, int(img.height * scale))
+    return img.resize((w, h), Image.LANCZOS)
+
+
+def apply_pixel_caps(processor, min_pixels=PIXELS_MIN, max_pixels=PIXELS_MAX):
+    """train_unsloth.build_model과 동일한 규칙으로 이미지 토큰 예산을 캡.
+
+    구형(min/max_pixels 속성)과 신형(size dict) 어느 쪽이 유효한지 버전마다
+    다르고, 무시되는 쪽도 대입은 예외 없이 "성공"하므로 둘 다 설정한다.
+    (2026-07-06: except AttributeError 분기는 실제로 도달하지 않는 silent
+    no-op였다 — test 대형 이미지 OOM 재발의 원인.)
+    """
+    ip = getattr(processor, "image_processor", None)
+    if ip is None:
+        return
+    for name, val in (("min_pixels", min_pixels), ("max_pixels", max_pixels)):
+        try:
+            setattr(ip, name, val)
+        except AttributeError:
+            pass
+    try:
+        ip.size = {"shortest_edge": min_pixels, "longest_edge": max_pixels}
+    except AttributeError:
+        pass
+
 
 def tta_perms(n, seed=42):
     """identity + 서로 다른 셔플 perm (n-1)개. 전 샘플 공유 (재현성)."""
@@ -59,12 +103,15 @@ def load_model(model_path, device):
     model = AutoVLM.from_pretrained(model_path, dtype=dtype).to(device).eval()
     processor = AutoProcessor.from_pretrained(model_path)
     processor.tokenizer.padding_side = "left"  # 배치 생성 필수 (right-pad는 생성 위치가 어긋남)
+    apply_pixel_caps(processor)
     return model, processor
 
 
 def load_frames(row, crop):
     images = [Image.open(p).convert("RGB") for p in frame_paths(row)]
-    return [crop_letterbox(im) for im in images] if crop else images
+    if crop:
+        images = [crop_letterbox(im) for im in images]
+    return [cap_pixels(im) for im in images]
 
 
 @torch.inference_mode()

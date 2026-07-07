@@ -98,3 +98,30 @@ def test_tie_break_is_deterministic_and_borda_guided():
 
 def test_parse_vote_fail():
     assert parse_vote("no list here", [0, 1, 2, 3]) == ("fail", None)
+
+
+def test_disperse_top_scales_gate_to_vote_count():
+    """tta8 대응: 최빈 표수 2까지도 '합의 부족'으로 게이트 (문턱 파라미터화)."""
+    votes = [
+        ("orderable", [2, 1, 3, 4]), ("orderable", [2, 1, 3, 4]),
+        ("orderable", [1, 2, 4, 3]), ("orderable", [1, 2, 4, 3]),
+        ("orderable", [2, 1, 4, 3]), ("orderable", [3, 1, 4, 2]),
+        ("orderable", [4, 1, 3, 2]), ("orderable", [1, 4, 3, 2]),
+    ]
+    assert aggregate_votes(votes)[1] == "borda_tie"  # 기본 문턱 1은 top=2라 통과
+    assert aggregate_votes(votes, disperse_top=2) == (IDENTITY, "disperse_gate")
+    # 문턱보다 강한 합의(top=3)는 게이트를 통과한다
+    votes[3] = ("orderable", [2, 1, 3, 4])
+    assert aggregate_votes(votes, disperse_top=2) == ([2, 1, 3, 4], "mode")
+
+
+def test_identity_quota_overrides_mode():
+    """identity 표가 쿼터 이상이면 최빈이 아니어도 identity (no_ordering 신호)."""
+    votes = [
+        ("orderable", list(IDENTITY)), ("orderable", list(IDENTITY)),
+        ("orderable", [2, 1, 3, 4]), ("orderable", [2, 1, 3, 4]),
+        ("orderable", [2, 1, 3, 4]),
+    ]
+    assert aggregate_votes(votes) == ([2, 1, 3, 4], "mode")
+    assert aggregate_votes(votes, identity_quota=2) == (IDENTITY, "identity_quota")
+    assert aggregate_votes(votes, identity_quota=3) == ([2, 1, 3, 4], "mode")

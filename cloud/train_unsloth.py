@@ -39,17 +39,20 @@ def build_model(cfg):
         random_state=cfg["train"]["seed"],
     )
     # 작은 프레임의 강제 업스케일 방지 + 이상치 캡 (계획 §1.2)
-    if hasattr(processor, "image_processor"):
+    # 구형(min/max_pixels 속성)·신형(size dict, 픽셀 "개수" 예산) 어느 쪽이 유효한지
+    # 버전마다 다르고 무시되는 쪽도 대입은 예외 없이 성공하므로 둘 다 설정한다
+    # (predict.apply_pixel_caps와 동일 규칙 — 2026-07-06 silent no-op 교훈).
+    ip = getattr(processor, "image_processor", None)
+    if ip is not None:
+        for name, val in (("min_pixels", cfg["pixels"]["min"]), ("max_pixels", cfg["pixels"]["max"])):
+            try:
+                setattr(ip, name, val)
+            except AttributeError:
+                pass
         try:
-            processor.image_processor.min_pixels = cfg["pixels"]["min"]
-            processor.image_processor.max_pixels = cfg["pixels"]["max"]
+            ip.size = {"shortest_edge": cfg["pixels"]["min"], "longest_edge": cfg["pixels"]["max"]}
         except AttributeError:
-            # 신형 transformers: min/max_pixels가 읽기 전용 → size dict로 설정
-            # (shortest/longest_edge는 이름과 달리 픽셀 "개수" 예산)
-            processor.image_processor.size = {
-                "shortest_edge": cfg["pixels"]["min"],
-                "longest_edge": cfg["pixels"]["max"],
-            }
+            pass
     return model, processor
 
 
@@ -150,6 +153,7 @@ def run(cfg_path, jsonl_path, data_dir, resume=False, limit=None, output_dir=Non
         jsonl_path, data_dir,
         style=cfg["data"]["style"], augment=cfg["data"]["perm_augment"],
         crop=cfg["data"]["letterbox_crop"], seed=cfg["train"]["seed"], limit=limit,
+        oversample_no_ordering=cfg["data"].get("oversample_no_ordering", 1),
     )
     trainer = make_trainer(model, processor, dataset, cfg)
     trainer.add_callback(make_nan_guard())
