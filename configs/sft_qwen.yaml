@@ -31,6 +31,7 @@ train:
   max_seq_len: 2048
   seed: 42
   save_steps: 200                # 세션 12h 초과 대비 체크포인트
+  save_total_limit: 2            # 오래된 checkpoint-* 자동 삭제
   logging_steps: 10
   train_on_responses_only: true
 
@@ -39,3 +40,4 @@ data:
   letterbox_crop: true
   perm_augment: true
   oversample_no_ordering: 2      # _0707: UNORDERABLE 신호 보강 (x3 아님 — identity 과베팅 경계)
+  caption_aug_prob: 0.3          # 규칙 기반 then/before/after/followed by 변환 (LLM paraphrase 아님)

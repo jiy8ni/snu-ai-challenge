@@ -5,8 +5,9 @@
   - 타깃 텍스트는 build_target으로 **재생성** (jsonl의 정적 cot 필드는 사용 금지)
   - no_ordering 샘플은 배치와 무관하게 타깃 [1,2,3,4] 고정
   - orderable 샘플은 증강 후에도 identity rank가 되지 않도록 재추출
+  - 선택적으로 캡션의 시간 연결어를 규칙 기반으로 바꾸되 이벤트 순서는 보존
 
-재현성: 공유 rng가 호출 순서대로 전진한다 -> dataloader_num_workers=0 권장.
+재현성: rng가 호출 순서대로 전진한다 -> dataloader_num_workers=0 권장.
 이미지 경로는 jsonl에 Windows 역슬래시로 저장돼 있으므로 정규화한다.
 """
 
@@ -16,6 +17,7 @@ import random
 
 from PIL import Image
 
+from src.preprocess.caption_augment import augment_caption
 from src.preprocess.frame_quality import crop_letterbox
 from src.train.targets import augment_perm_and_rank, build_instruction, build_target
 
@@ -47,11 +49,12 @@ class VLSFTDataset:
 
     def __init__(
         self, jsonl_path, data_dir, style="mid", augment=True, crop=True, seed=42, limit=None,
-        oversample_no_ordering=1,
+        oversample_no_ordering=1, caption_aug_prob=0.0,
     ):
         """oversample_no_ordering: no_ordering 레코드를 n배로 복제 (1=off).
         매 __getitem__마다 perm 증강이 새로 뽑히므로 복제본도 서로 다른 뷰가 된다.
         UNORDERABLE recall(_0705 실측 22%) 보강용 — 제공 데이터 증강이라 규정 합법."""
+        assert 0.0 <= caption_aug_prob <= 1.0, "caption_aug_prob must be in [0, 1]"
         self.records = load_records(jsonl_path)[: limit or None]
         if oversample_no_ordering > 1:
             extra = [r for r in self.records if r["no_ordering"]]
@@ -61,6 +64,8 @@ class VLSFTDataset:
         self.augment = augment
         self.crop = crop
         self.rng = random.Random(seed)
+        self.caption_rng = random.Random(seed + 1000003)
+        self.caption_aug_prob = caption_aug_prob
 
     def __len__(self):
         return len(self.records)
@@ -78,5 +83,8 @@ class VLSFTDataset:
         else:
             perm, rank = [0, 1, 2, 3], rec["rank"]
         images = self.load_images(rec, perm)
+        caption = rec["caption"]
+        if self.caption_aug_prob > 0 and self.caption_rng.random() < self.caption_aug_prob:
+            caption = augment_caption(caption, self.caption_rng)
         target = build_target(self.style, rec["events"], rank, rec["no_ordering"])
-        return {"messages": build_messages(images, rec["caption"], self.style, target)}
+        return {"messages": build_messages(images, caption, self.style, target)}
