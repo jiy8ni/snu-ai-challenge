@@ -24,6 +24,7 @@ from src.data.loader import frame_paths, load_paths, load_split
 from src.preprocess.frame_quality import crop_letterbox
 from src.train.vl_dataset import build_messages
 from src.utils.permutation import N_FRAMES
+from src.utils.runtime import configure_disk_cache
 
 MAX_NEW_TOKENS = {"short": 32, "mid": 64, "cot": 300}
 
@@ -86,7 +87,23 @@ def tta_perms(n, seed=42):
     return perms
 
 
+def is_lora_adapter(model_path):
+    return os.path.exists(os.path.join(model_path, "adapter_config.json"))
+
+
 def load_model(model_path, device):
+    configure_disk_cache()
+    if is_lora_adapter(model_path):
+        from unsloth import FastVisionModel
+
+        model, processor = FastVisionModel.from_pretrained(model_path, load_in_4bit=True)
+        FastVisionModel.for_inference(model)
+        model.eval()
+        processor.tokenizer.padding_side = "left"
+        apply_pixel_caps(processor)
+        print(f"loaded LoRA adapter in 4bit mode: {model_path}")
+        return model, processor
+
     from transformers import AutoProcessor
 
     try:

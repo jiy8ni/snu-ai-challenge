@@ -13,6 +13,8 @@ import os
 
 import yaml
 
+from src.utils.runtime import configure_disk_cache
+
 
 def load_cfg(path):
     with open(path, encoding="utf-8") as f:
@@ -114,7 +116,7 @@ def make_trainer(model, processor, dataset, cfg):
         bf16=bf16,
         logging_steps=t["logging_steps"],
         save_steps=t["save_steps"],
-        save_total_limit=2,  # Drive 용량 보호 (체크포인트당 ~0.5GB)
+        save_total_limit=t.get("save_total_limit", 2),  # RunPod/root disk quota 보호
         optim="paged_adamw_8bit",
         seed=t["seed"],
         output_dir=cfg["output_dir"],
@@ -147,6 +149,7 @@ def run(cfg_path, jsonl_path, data_dir, resume=False, limit=None, output_dir=Non
         cfg["output_dir"] = output_dir
     if train_overrides:
         cfg["train"].update(train_overrides)
+    configure_disk_cache(cfg.get("runpod", {}).get("base_dir"))
     os.makedirs(cfg["output_dir"], exist_ok=True)
     model, processor = build_model(cfg)
     dataset = VLSFTDataset(
@@ -154,6 +157,7 @@ def run(cfg_path, jsonl_path, data_dir, resume=False, limit=None, output_dir=Non
         style=cfg["data"]["style"], augment=cfg["data"]["perm_augment"],
         crop=cfg["data"]["letterbox_crop"], seed=cfg["train"]["seed"], limit=limit,
         oversample_no_ordering=cfg["data"].get("oversample_no_ordering", 1),
+        caption_aug_prob=cfg["data"].get("caption_aug_prob", 0.0),
     )
     trainer = make_trainer(model, processor, dataset, cfg)
     trainer.add_callback(make_nan_guard())
