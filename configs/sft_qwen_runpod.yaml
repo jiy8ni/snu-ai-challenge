@@ -1,0 +1,48 @@
+# RunPod version of Track B training config.
+# Keep every large artifact under /workspace/snuai to avoid root disk quota errors.
+model: unsloth/Qwen2.5-VL-7B-Instruct
+load_in_4bit: true
+output_dir: /workspace/snuai/outputs/qwen25vl7b
+
+runpod:
+  base_dir: /workspace/snuai
+
+pixels:
+  min: 25088
+  max: 250880
+
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0.0
+  finetune_vision_layers: true
+  finetune_language_layers: true
+  finetune_attention_modules: true
+  finetune_mlp_modules: true
+
+train:
+  epochs: 3
+  per_device_batch: 1
+  grad_accum: 16
+  lr: 1.0e-4
+  scheduler: cosine
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 0.3
+  max_seq_len: 2048
+  seed: 42
+  save_steps: 500          # fewer checkpoint writes on RunPod volumes
+  save_total_limit: 1      # keep only the newest checkpoint-* plus final lora/
+  logging_steps: 10
+  train_on_responses_only: true
+
+data:
+  style: mid
+  letterbox_crop: true
+  perm_augment: true
+  oversample_no_ordering: 2
+  caption_aug_prob: 0.45
+  caption_aug_source: mix          # rule variants + caption_llm_variants when present
+  llm_caption_field: caption_llm_variants
+  hard_aug_repeats_field: caption_aug_repeats
+  hard_aug_max_repeats: 5

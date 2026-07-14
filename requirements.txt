@@ -1,0 +1,23 @@
+# 기본 (baseline과 동일)
+torch
+torchvision
+transformers
+accelerate
+qwen-vl-utils
+pandas
+pillow
+tqdm
+
+# 전처리
+imagehash          # phash 근접 중복 탐지
+scipy
+scikit-learn       # No_ordering 보조 분류기 (분석용)
+open_clip_torch    # SigLIP/CLIP 프레임-캡션 정합성 (전처리 전용)
+
+# 학습
+peft               # LoRA
+datasets
+pyyaml
+
+# 테스트
+pytest

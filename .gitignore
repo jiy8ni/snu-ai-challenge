@@ -1,0 +1,27 @@
+# 대회 데이터 (원본 위치 유지, 저장소에 포함하지 않음)
+snuaichallenge/
+snuaichallenge.zip
+
+# 모델 가중치 / 산출물
+models/*
+!models/.gitkeep
+outputs/*
+!outputs/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# 실험 로그
+wandb/
+runs/
+
+# 자격증명
+cloud/kaggle.json
+*.json.secret
+
+# pytest
+.pytest_cache/
