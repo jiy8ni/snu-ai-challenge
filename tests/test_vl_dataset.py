@@ -73,3 +73,69 @@ def test_caption_augmentation_changes_prompt_only_with_same_events(tmp_path):
     assert augmented != caption
     assert split_events(augmented) == events
     assert item["messages"][1]["content"][0]["text"].endswith("Answer: [2, 1, 3, 4]")
+
+
+def test_llm_caption_variants_and_hard_repeats(tmp_path):
+    caption = "A man opens the door, then he walks inside."
+    variant = "A man opens the door before walking inside."
+    record = {
+        "Id": "hard-1",
+        "images": ["a.jpg"] * 4,
+        "caption": caption,
+        "caption_llm_variants": [variant],
+        "caption_aug_repeats": 3,
+        "caption_aug_prob": 1.0,
+        "events": split_events(caption),
+        "rank": [2, 1, 3, 4],
+        "no_ordering": False,
+    }
+    p = tmp_path / "sft.jsonl"
+    _write_jsonl(p, [record])
+
+    ds = VLSFTDataset(
+        str(p),
+        data_dir=".",
+        augment=False,
+        crop=False,
+        caption_aug_source="llm",
+        caption_aug_prob=0.0,
+    )
+    ds.load_images = lambda _record, _perm: ["im1", "im2", "im3", "im4"]
+
+    assert len(ds) == 3
+    prompt = ds[0]["messages"][0]["content"][-1]["text"]
+    assert variant in prompt
+
+
+def test_hard_cases_path_overrides_repeats_and_prob(tmp_path):
+    caption = "A skier jumps, then lands."
+    record = {
+        "Id": "case-1",
+        "images": ["a.jpg"] * 4,
+        "caption": caption,
+        "caption_llm_variants": ["A skier jumps and then lands."],
+        "events": split_events(caption),
+        "rank": [1, 2, 3, 4],
+        "no_ordering": True,
+    }
+    p = tmp_path / "sft.jsonl"
+    _write_jsonl(p, [record])
+    hard = tmp_path / "hard.csv"
+    hard.write_text(
+        "Id,caption_aug_repeats,caption_aug_prob\ncase-1,4,1.0\n",
+        encoding="utf-8",
+    )
+
+    ds = VLSFTDataset(
+        str(p),
+        data_dir=".",
+        augment=False,
+        crop=False,
+        caption_aug_source="llm",
+        hard_cases_path=str(hard),
+        oversample_no_ordering=1,
+    )
+    ds.load_images = lambda _record, _perm: ["im1", "im2", "im3", "im4"]
+
+    assert len(ds) == 4
+    assert "A skier jumps and then lands." in ds[0]["messages"][0]["content"][-1]["text"]

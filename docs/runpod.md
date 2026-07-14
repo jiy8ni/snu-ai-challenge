@@ -59,6 +59,67 @@ python -m src.train.cot_target
 /workspace/snuai/outputs/sft_val.jsonl
 ```
 
+## 3.5 Hard-case-aware LLM caption augmentation
+
+Rules update: LLM text augmentation is allowed when the external-generation
+budget stays under 30,000 KRW. Keep the default guard at 25,000 KRW unless you
+explicitly want to spend the full allowance.
+
+To weight `sft_train.jsonl`, build predictions for the same train fold IDs.
+Do not use test information. A validation-fold hard-case file is useful for
+diagnosis, but it will not match `sft_train.jsonl` IDs.
+
+```bash
+python -m src.infer.predict \
+  --model /workspace/snuai/models/qwen25vl7b_merged \
+  --split train --fold train --tta 4 --batch 8 \
+  --style mid --out /workspace/snuai/outputs/raw_train.jsonl
+
+python -m src.infer.aggregate \
+  --raw /workspace/snuai/outputs/raw_train.jsonl \
+  --out /workspace/snuai/outputs/pred_train.csv
+```
+
+Turn missed/low-tau train samples into augmentation weights:
+
+```bash
+python -m src.preprocess.hard_cases \
+  --pred /workspace/snuai/outputs/pred_train.csv \
+  --fold train \
+  --out /workspace/snuai/outputs/hard_train_cases.csv
+```
+
+Generate LLM paraphrases once, offline:
+
+```bash
+export OPENAI_API_KEY=...
+python -m src.preprocess.llm_caption_augment \
+  --input /workspace/snuai/outputs/sft_train.jsonl \
+  --hard-cases /workspace/snuai/outputs/hard_train_cases.csv \
+  --out /workspace/snuai/outputs/sft_train_llm_aug.jsonl \
+  --max-cost-krw 25000
+```
+
+If you do not have a previous checkpoint yet, omit `--hard-cases`; every record
+gets the base number of variants and no hard-case extra repeats.
+
+For a cheap smoke test before spending API budget:
+
+```bash
+python -m src.preprocess.llm_caption_augment \
+  --input /workspace/snuai/outputs/sft_train.jsonl \
+  --out /workspace/snuai/outputs/sft_train_llm_aug_smoke.jsonl \
+  --max-records 5 --dry-run
+```
+
+Train on the augmented JSONL:
+
+```bash
+python -m cloud.runpod_train \
+  --sft-jsonl /workspace/snuai/outputs/sft_train_llm_aug.jsonl \
+  --per-device-batch 1 --grad-accum 16
+```
+
 ## 4. 학습
 
 먼저 스모크:

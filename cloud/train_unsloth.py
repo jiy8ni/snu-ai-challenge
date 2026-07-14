@@ -158,6 +158,11 @@ def run(cfg_path, jsonl_path, data_dir, resume=False, limit=None, output_dir=Non
         crop=cfg["data"]["letterbox_crop"], seed=cfg["train"]["seed"], limit=limit,
         oversample_no_ordering=cfg["data"].get("oversample_no_ordering", 1),
         caption_aug_prob=cfg["data"].get("caption_aug_prob", 0.0),
+        caption_aug_source=cfg["data"].get("caption_aug_source", "rule"),
+        llm_caption_field=cfg["data"].get("llm_caption_field", "caption_llm_variants"),
+        hard_cases_path=cfg["data"].get("hard_cases_path"),
+        hard_aug_repeats_field=cfg["data"].get("hard_aug_repeats_field", "caption_aug_repeats"),
+        hard_aug_max_repeats=cfg["data"].get("hard_aug_max_repeats", 5),
     )
     trainer = make_trainer(model, processor, dataset, cfg)
     trainer.add_callback(make_nan_guard())

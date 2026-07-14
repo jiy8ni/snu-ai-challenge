@@ -41,4 +41,8 @@ data:
   letterbox_crop: true
   perm_augment: true
   oversample_no_ordering: 2
-  caption_aug_prob: 0.3
+  caption_aug_prob: 0.45
+  caption_aug_source: mix          # rule variants + caption_llm_variants when present
+  llm_caption_field: caption_llm_variants
+  hard_aug_repeats_field: caption_aug_repeats
+  hard_aug_max_repeats: 5

@@ -15,13 +15,14 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--smoke", action="store_true", help="train only 32 records")
     ap.add_argument("--output-dir", default=None)
+    ap.add_argument("--sft-jsonl", default=None, help="override training JSONL path")
     ap.add_argument("--per-device-batch", type=int, default=None)
     ap.add_argument("--grad-accum", type=int, default=None)
     args = ap.parse_args()
 
     configure_disk_cache()
     paths = load_paths()
-    sft = os.path.join(paths["outputs_dir"], "sft_train.jsonl")
+    sft = args.sft_jsonl or os.path.join(paths["outputs_dir"], "sft_train.jsonl")
     if not os.path.exists(sft):
         raise FileNotFoundError(
             f"Missing {sft}. Run `python -m src.data.split` and "

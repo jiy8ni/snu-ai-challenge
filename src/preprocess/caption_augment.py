@@ -1,8 +1,8 @@
 """Rule-based caption augmentation for temporal connectives.
 
-This module deliberately avoids LLM paraphrasing.  It only rewrites captions
-through templates whose temporal event list round-trips through
-``caption_events.split_events`` unchanged.
+This module is the rule-based caption augmenter.  LLM paraphrases are generated
+offline by ``src.preprocess.llm_caption_augment`` and then consumed by the
+training dataset through the ``caption_llm_variants`` field.
 """
 
 import random
