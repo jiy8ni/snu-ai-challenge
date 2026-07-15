@@ -14,6 +14,22 @@ The script writes the original records plus:
   - caption_aug_prob: per-record caption augmentation probability
 
 It uses only stdlib HTTP so RunPod does not need an extra OpenAI package.
+
+품질·예산 제어(기본 on):
+  - 이벤트 순서 검증(events_in_order): 변형이 원본 이벤트를 같은 순서로
+    서술하지 않으면 기각 — 순열 라벨과 모순되는 캡션 학습 차단.
+    끄려면 --no-order-check, 임계는 --min-event-overlap.
+  - 자카드 근사중복 필터: 수락분·원본과 --dup-jaccard(0.85) 이상 유사한
+    후보는 스킵해 변형 슬롯 낭비 방지.
+  - 부스팅식 예산: hard_score 내림차순으로 API를 지출해 예산 소진 시에도
+    hard 케이스가 먼저 채워진다(--no-priority-order로 해제).
+    --easy-base-variants 0이면 easy 콜을 생략하고 hard에 전량 집중.
+  - --revalidate-only: 기존 증강 jsonl의 variants를 API 호출 없이
+    신규 검증기로 재필터링(이미 지출한 예산의 산출물 정화).
+  - API 호출 로그가 <out>.calls.jsonl에 보존된다(규정: 비용·프롬프트·로그).
+  - 주의: 여기서 기록하는 per-record caption_aug_prob는 vl_dataset의 config
+    전역값을 덮어쓴다. easy 레코드까지 base(0.3)로 하향시키고 싶지 않으면
+    --omit-easy-fields로 score 0 레코드의 필드 기록을 생략할 것.
 """
 
 import argparse
@@ -28,6 +44,7 @@ import urllib.request
 from copy import copy
 
 from src.preprocess.caption_events import split_events
+from src.preprocess.hard_weights import clamp01, prob_from_score, repeats_from_score
 
 DEFAULT_MODEL = "gpt-5.4-nano"
 DEFAULT_INPUT_USD_PER_1M = 0.10
@@ -93,8 +110,7 @@ def _truthy(value):
     return str(value).strip().lower() in {"1", "true", "t", "yes", "y"}
 
 
-def _clamp01(value):
-    return min(1.0, max(0.0, float(value)))
+_clamp01 = clamp01  # 하위호환 별칭 (수식 본체는 hard_weights.py)
 
 
 def hard_score(row):
@@ -121,18 +137,32 @@ def annotate_hard_fields(
     max_repeats,
     base_caption_aug_prob,
     hard_caption_aug_prob,
+    omit_easy_fields=False,
 ):
+    """레코드에 caption_aug_repeats/prob/hard_score를 기록.
+
+    주의: 여기서 기록한 per-record ``caption_aug_prob``는 학습 시
+    vl_dataset의 config 전역값(예: 0.45)을 **덮어쓴다**. easy 레코드에
+    base(0.3)를 기록하면 전역값을 하향시키는 셈이라, ``omit_easy_fields``가
+    켜지면 score 0(명시 override 없음) 레코드는 필드를 아예 기록하지 않아
+    config 폴백이 적용되게 한다.
+    """
     out = copy(rec)
-    if hard_row and hard_row.get("caption_aug_repeats") not in (None, ""):
+    explicit_repeats = bool(hard_row) and hard_row.get("caption_aug_repeats") not in (None, "")
+    explicit_prob = bool(hard_row) and hard_row.get("caption_aug_prob") not in (None, "")
+    if omit_easy_fields and score <= 0.0 and not explicit_repeats and not explicit_prob:
+        return out
+
+    if explicit_repeats:
         repeats = int(float(hard_row["caption_aug_repeats"]))
     else:
-        repeats = 1 + int(math.ceil(score * (max_repeats - 1)))
+        repeats = repeats_from_score(score, max_repeats)
     out["caption_aug_repeats"] = max(1, min(int(max_repeats), repeats))
 
-    if hard_row and hard_row.get("caption_aug_prob") not in (None, ""):
+    if explicit_prob:
         prob = float(hard_row["caption_aug_prob"])
     else:
-        prob = base_caption_aug_prob + (hard_caption_aug_prob - base_caption_aug_prob) * score
+        prob = prob_from_score(score, base_caption_aug_prob, hard_caption_aug_prob)
     out["caption_aug_prob"] = round(_clamp01(prob), 6)
     out["hard_score"] = round(score, 6)
     return out
@@ -197,7 +227,55 @@ def _content_tokens(text):
     return {t for t in tokens if len(t) > 2 and t not in STOPWORDS}
 
 
-def is_valid_variant(candidate, original, events, min_token_overlap=0.45, require_event_count=False):
+def _jaccard(tokens_a, tokens_b):
+    if not tokens_a and not tokens_b:
+        return 1.0
+    return len(tokens_a & tokens_b) / max(1, len(tokens_a | tokens_b))
+
+
+def events_in_order(candidate, events, min_event_overlap=0.34):
+    """후보 캡션이 원본 이벤트를 같은 시간 순서로 서술하는지 검사.
+
+    LLM 패러프레이즈는 이벤트 문구 자체를 바꾸므로 규칙 기반처럼
+    split_events 완전 라운드트립을 강제할 수 없다. 대신 각 원본 이벤트를
+    후보 이벤트 중 콘텐츠 토큰 겹침이 최대인 것에 매핑하고, 그 매핑
+    인덱스가 엄격 단조증가인지 본다 — 순서 뒤집힘(비단조)과 이벤트
+    병합(두 원본이 같은 후보에 매핑) 모두 여기서 걸린다. 최대 겹침이
+    min_event_overlap 미만이면 이벤트 누락으로 기각.
+    """
+    if len(events) < 2:
+        return True
+    cand_events = split_events(candidate)
+    if not cand_events:
+        return False
+    cand_tokens = [_content_tokens(ev) for ev in cand_events]
+    prev_j = -1
+    for ev in events:
+        ev_tokens = _content_tokens(ev)
+        if not ev_tokens:  # 전부 stopword/2자 이하 — 매핑 근거가 없어 스킵
+            continue
+        best_j, best_overlap = -1, -1.0
+        for j, ct in enumerate(cand_tokens):
+            overlap = len(ev_tokens & ct) / len(ev_tokens)
+            if overlap > best_overlap:  # 동률은 최소 j 유지
+                best_j, best_overlap = j, overlap
+        if best_overlap < min_event_overlap:
+            return False
+        if best_j <= prev_j:
+            return False
+        prev_j = best_j
+    return True
+
+
+def is_valid_variant(
+    candidate,
+    original,
+    events,
+    min_token_overlap=0.45,
+    require_event_count=False,
+    check_event_order=True,
+    min_event_overlap=0.34,
+):
     text = candidate.strip()
     if not text or text.lower() == original.strip().lower():
         return False
@@ -216,7 +294,46 @@ def is_valid_variant(candidate, original, events, min_token_overlap=0.45, requir
         parsed = split_events(text)
         if len(parsed) != len(events):
             return False
+
+    if check_event_order and not events_in_order(text, events, min_event_overlap):
+        return False
     return True
+
+
+def accept_variants(candidates, caption, events, args, existing=None):
+    """유효성(순서 검증 포함)+자카드 근사중복을 통과한 신규 후보만 순서대로 수집.
+
+    existing(이미 수락된 변형)과 원본 캡션 모두를 중복 기준으로 삼는다.
+    반환은 신규 수락분만 — 호출측이 existing 뒤에 이어붙인다.
+    """
+    kept_tokens = [_content_tokens(caption)]
+    seen = {caption.strip()}
+    for v in existing or []:
+        seen.add(v)
+        kept_tokens.append(_content_tokens(v))
+
+    accepted = []
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate or candidate in seen:
+            continue
+        if not is_valid_variant(
+            candidate,
+            caption,
+            events,
+            min_token_overlap=args.min_token_overlap,
+            require_event_count=args.require_event_count,
+            check_event_order=args.order_check,
+            min_event_overlap=args.min_event_overlap,
+        ):
+            continue
+        tokens = _content_tokens(candidate)
+        if any(_jaccard(tokens, kt) >= args.dup_jaccard for kt in kept_tokens):
+            continue
+        accepted.append(candidate)
+        seen.add(candidate)
+        kept_tokens.append(tokens)
+    return accepted
 
 
 def _api_url(url):
@@ -259,26 +376,13 @@ def call_chat_completion(args, system, user):
     return _extract_content(message), body.get("usage", {})
 
 
-def generate_variants(args, caption, events, n):
+def generate_variants(args, caption, events, n, existing=None):
     system, user = _prompt(caption, events, n)
     for attempt in range(args.retries):
         try:
             text, usage = call_chat_completion(args, system, user)
             raw = parse_variants(text)
-            variants = []
-            seen = {caption.strip()}
-            for candidate in raw:
-                if candidate in seen:
-                    continue
-                if is_valid_variant(
-                    candidate,
-                    caption,
-                    events,
-                    min_token_overlap=args.min_token_overlap,
-                    require_event_count=args.require_event_count,
-                ):
-                    variants.append(candidate)
-                    seen.add(candidate)
+            variants = accept_variants(raw, caption, events, args, existing=existing)
             return variants, usage, system + "\n" + user, text
         except (urllib.error.URLError, TimeoutError, RuntimeError, KeyError, IndexError, json.JSONDecodeError) as exc:
             if attempt + 1 >= args.retries:
@@ -289,16 +393,78 @@ def generate_variants(args, caption, events, n):
     return [], {}, system + "\n" + user, ""
 
 
-def augment_records(records, hard_by_id, args):
+def revalidate_records(records, args):
+    """API 호출 없이 기존 caption_llm_variants를 신규 검증기로 재필터링.
+
+    팀원이 이미 지출한 예산의 산출물을 무료로 정화하는 경로. 제거된
+    변형 수와 기각률을 통계로 돌려준다 (기각률이 높으면
+    --min-event-overlap 하향을 검토할 것).
+    """
     out = []
+    before = after = touched = 0
+    for rec in records:
+        rec_out = copy(rec)
+        existing = normalise_variants(rec_out.get(args.output_field, []))
+        if existing:
+            caption = rec.get("caption", "")
+            events = rec.get("events") or split_events(caption) or [caption]
+            kept = accept_variants(existing, caption, events, args)
+            before += len(existing)
+            after += len(kept)
+            if len(kept) != len(existing):
+                touched += 1
+            rec_out[args.output_field] = kept
+        out.append(rec_out)
+    stats = {
+        "records": len(records),
+        "variants_before": before,
+        "variants_after": after,
+        "removed": before - after,
+        "reject_rate": round((before - after) / before, 4) if before else 0.0,
+        "records_touched": touched,
+    }
+    return out, stats
+
+
+def _append_call_log(args, rec_id, prompt, response, usage, cost_usd):
+    """규정(docs/rules.md §외부 API)의 비용·프롬프트·생성 로그 보존 의무 이행."""
+    if not getattr(args, "log_file", None):
+        return
+    os.makedirs(os.path.dirname(args.log_file) or ".", exist_ok=True)
+    entry = {
+        "Id": rec_id,
+        "model": args.model,
+        "prompt": prompt,
+        "response": response,
+        "usage": usage,
+        "cost_usd": round(cost_usd, 8),
+    }
+    with open(args.log_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def augment_records(records, hard_by_id, args):
+    n_records = len(records)
+    hard_rows = [hard_by_id.get(str(rec.get("Id", "")), {}) for rec in records]
+    scores = [hard_score(row) for row in hard_rows]
+
+    # 부스팅식 지출: hard_score 내림차순(동률은 원본 순서)으로 처리해 예산이
+    # 소진되더라도 hard 케이스가 먼저 채워진다. 출력 순서는 원본을 유지한다.
+    if args.no_priority_order:
+        order = list(range(n_records))
+    else:
+        order = sorted(range(n_records), key=lambda i: (-scores[i], i))
+
+    out = [None] * n_records
     spent_usd = 0.0
     called = skipped_budget = 0
     planned_calls = planned_variants = 0
     limit = args.max_records if args.max_records and args.max_records > 0 else None
 
-    for idx, rec in enumerate(records):
-        hard_row = hard_by_id.get(str(rec.get("Id", "")), {})
-        score = hard_score(hard_row)
+    for step, idx in enumerate(order):
+        rec = records[idx]
+        hard_row = hard_rows[idx]
+        score = scores[idx]
         rec_out = annotate_hard_fields(
             rec,
             hard_row,
@@ -306,11 +472,15 @@ def augment_records(records, hard_by_id, args):
             args.max_repeats,
             args.base_caption_aug_prob,
             args.hard_caption_aug_prob,
+            omit_easy_fields=args.omit_easy_fields,
         )
 
         existing = normalise_variants(rec_out.get(args.output_field, []))
+        base_variants = args.base_variants
+        if args.easy_base_variants is not None and score <= args.easy_score_threshold:
+            base_variants = args.easy_base_variants
         target_n = target_variant_count(
-            score, args.base_variants, args.hard_extra_variants, args.max_variants_per_record
+            score, base_variants, args.hard_extra_variants, args.max_variants_per_record
         )
         needed = max(0, target_n - len(existing))
         if limit is not None and called >= limit:
@@ -332,29 +502,34 @@ def augment_records(records, hard_by_id, args):
             if (spent_usd + est_usd) * args.krw_per_usd > args.max_cost_krw:
                 skipped_budget += 1
             elif not args.dry_run:
-                variants, usage, _, _ = generate_variants(args, rec["caption"], events, needed)
+                variants, usage, prompt_text, response_text = generate_variants(
+                    args, rec["caption"], events, needed, existing=existing
+                )
                 existing.extend(variants)
                 called += 1
                 input_tokens = int(usage.get("prompt_tokens") or est_in)
                 output_tokens = int(usage.get("completion_tokens") or estimate_tokens(" ".join(variants)))
-                spent_usd += estimate_cost_usd(
+                call_usd = estimate_cost_usd(
                     input_tokens,
                     output_tokens,
                     args.price_input_usd_per_1m,
                     args.price_output_usd_per_1m,
                 )
+                spent_usd += call_usd
+                _append_call_log(args, rec.get("Id"), prompt_text, response_text, usage, call_usd)
                 if args.sleep:
                     time.sleep(args.sleep)
             else:
                 spent_usd += est_usd
 
         rec_out[args.output_field] = existing[: args.max_variants_per_record]
-        out.append(rec_out)
-        if args.save_every and not args.dry_run and (idx + 1) % args.save_every == 0:
-            write_jsonl(args.out, out + records[idx + 1 :])
+        out[idx] = rec_out
+        if args.save_every and not args.dry_run and (step + 1) % args.save_every == 0:
+            # 미처리 인덱스는 원본 레코드로 채워 재개 시 손실이 없게 한다.
+            write_jsonl(args.out, [out[i] if out[i] is not None else records[i] for i in range(n_records)])
 
     stats = {
-        "records": len(records),
+        "records": n_records,
         "planned_calls": planned_calls,
         "planned_variants": planned_variants,
         "actual_calls": called,
@@ -378,6 +553,24 @@ def main():
     ap.add_argument("--hard-caption-aug-prob", type=float, default=0.9)
     ap.add_argument("--min-token-overlap", type=float, default=0.45)
     ap.add_argument("--require-event-count", action="store_true")
+    ap.add_argument("--no-order-check", dest="order_check", action="store_false",
+                    help="이벤트 순서 보존 검증(기본 on)을 끈다 — 구 동작 복원용")
+    ap.set_defaults(order_check=True)
+    ap.add_argument("--min-event-overlap", type=float, default=0.34,
+                    help="이벤트별 매핑 최소 토큰 겹침 (미만이면 이벤트 누락으로 기각)")
+    ap.add_argument("--dup-jaccard", type=float, default=0.85,
+                    help="수락된 변형·원본과의 자카드 유사도가 이 값 이상이면 근사중복으로 스킵 (>1이면 사실상 off)")
+    ap.add_argument("--revalidate-only", action="store_true",
+                    help="API 호출 없이 기존 caption_llm_variants를 신규 검증기로 재필터링만 수행")
+    ap.add_argument("--no-priority-order", action="store_true",
+                    help="hard_score 내림차순 지출(기본)을 끄고 파일 순서로 처리")
+    ap.add_argument("--easy-base-variants", type=int, default=None,
+                    help="score<=--easy-score-threshold 레코드의 base 변형 수 오버라이드 (0이면 easy 콜 생략)")
+    ap.add_argument("--easy-score-threshold", type=float, default=0.0)
+    ap.add_argument("--omit-easy-fields", action="store_true",
+                    help="score 0 레코드에 caption_aug_prob/repeats 필드를 기록하지 않음 (config 전역값 폴백 유도)")
+    ap.add_argument("--log-file", default=None,
+                    help="API 호출 로그 jsonl (기본: <out>.calls.jsonl — 규정상 비용·프롬프트·응답 보존)")
 
     ap.add_argument("--api-url", default=os.environ.get("SNUAI_LLM_AUG_API_URL", "https://api.openai.com/v1"))
     ap.add_argument("--api-key-env", default="OPENAI_API_KEY")
@@ -401,6 +594,17 @@ def main():
     args = ap.parse_args()
 
     records = load_jsonl(args.input)
+
+    if args.revalidate_only:  # 기존 산출물 정화 — API 호출·예산 소비 없음
+        out, stats = revalidate_records(records, args)
+        print(json.dumps(stats, indent=2, ensure_ascii=False))
+        write_jsonl(args.out, out)
+        print(f"saved: {args.out}")
+        return
+
+    if args.log_file is None and not args.dry_run:
+        args.log_file = args.out + ".calls.jsonl"
+
     hard_by_id = load_hard_cases(args.hard_cases)
     out, stats = augment_records(records, hard_by_id, args)
     print(json.dumps(stats, indent=2, ensure_ascii=False))

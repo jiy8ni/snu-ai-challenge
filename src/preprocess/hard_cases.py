@@ -12,13 +12,13 @@ currently misses.
 """
 
 import argparse
-import math
 import os
 
 import pandas as pd
 
 from src.data.loader import load_paths, load_split
 from src.eval.em import kendall_tau
+from src.preprocess.hard_weights import prob_from_score, repeats_from_score
 from src.utils.permutation import IDENTITY, is_valid_permutation, parse_answer_column
 
 
@@ -74,8 +74,10 @@ def build_hard_case_table(
         em, tau, score = _score_case(pred, true, no_ordering)
         if only_wrong and em:
             continue
-        repeats = 1 + int(math.ceil(score * max_extra_repeats))
-        prob = easy_caption_aug_prob + (hard_caption_aug_prob - easy_caption_aug_prob) * score
+        # 공유 수식(hard_weights.py) — llm_caption_augment의 기본 경로와 항상 일치.
+        # 구식 --max-extra-repeats N은 max_repeats=N+1로 매핑된다.
+        repeats = repeats_from_score(score, max_extra_repeats + 1)
+        prob = prob_from_score(score, easy_caption_aug_prob, hard_caption_aug_prob)
         rows.append(
             {
                 "Id": row["Id"],
@@ -87,7 +89,7 @@ def build_hard_case_table(
                 "truth": str(true),
                 "hard_score": round(score, 6),
                 "caption_aug_repeats": repeats,
-                "caption_aug_prob": round(min(1.0, max(0.0, prob)), 6),
+                "caption_aug_prob": round(prob, 6),
             }
         )
     return pd.DataFrame(rows)
