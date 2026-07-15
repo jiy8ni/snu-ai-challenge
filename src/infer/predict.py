@@ -6,9 +6,15 @@ Kaggle GPU(학습된 모델)와 본선 3090에서 동일하게 쓰는 플레인 
 TTA: 모든 샘플이 동일한 고정 perm 목록(identity + 시드 셔플 N-1개)을 공유한다.
 프레임 재배치 -> 모델은 셔플 좌표로 답변 -> aggregate.py가 unshuffle 후 투표.
 
+캡션 TTA: --cap-variant j (1부터)로 규칙 기반 캡션 변형을 추가 뷰로 생성한다
+(caption_variants는 결정적이라 j가 같으면 항상 같은 변형). 같은 --out에 이어
+실행하면 재개 키 (Id, perm, cap)이 구분해 기존 뷰에 안전하게 append 된다.
+변형이 j개 미만인 샘플은 이 실행에서 제외된다(종료 시 개수 보고).
+
 사용:
   python -m src.infer.predict --model models/Qwen2-VL-2B-Instruct --split test \
-      --style mid --tta 4 --out outputs/raw_test.jsonl [--limit 5] [--fold val]
+      --style mid --tta 4 --out outputs/raw_test.jsonl [--limit 5] [--fold val] \
+      [--cap-variant 1]
 """
 
 import argparse
@@ -21,6 +27,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from src.data.loader import frame_paths, load_paths, load_split
+from src.preprocess.caption_augment import caption_variants
 from src.preprocess.frame_quality import crop_letterbox
 from src.train.vl_dataset import build_messages
 from src.utils.permutation import N_FRAMES
@@ -85,6 +92,17 @@ def tta_perms(n, seed=42):
             seen.add(tuple(p))
             perms.append(p)
     return perms
+
+
+def select_caption(sentence, cap_variant):
+    """cap_variant=0이면 원본, j>=1이면 caption_variants(sentence)[j-1].
+    변형이 j개 미만이면 None (해당 샘플은 이 실행에서 제외)."""
+    if cap_variant <= 0:
+        return sentence
+    variants = caption_variants(sentence)
+    if len(variants) < cap_variant:
+        return None
+    return variants[cap_variant - 1]
 
 
 def is_lora_adapter(model_path):
@@ -154,6 +172,8 @@ def main():
     ap.add_argument("--fold", default=None, help="train일 때 split.csv fold 필터 (예: val)")
     ap.add_argument("--style", default="mid", choices=["short", "mid", "cot"])
     ap.add_argument("--tta", type=int, default=4)
+    ap.add_argument("--cap-variant", type=int, default=0,
+                    help="캡션 TTA 뷰 인덱스 (0=원본, j>=1이면 caption_variants[j-1] 사용)")
     ap.add_argument("--batch", type=int, default=4, help="TTA 뷰 단위 배치 크기")
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=None)
@@ -179,21 +199,26 @@ def main():
     max_new = args.max_new_tokens or MAX_NEW_TOKENS[args.style]
 
     done = set()
-    if os.path.exists(args.out):  # 재개: 이미 생성된 (Id, perm) 건너뜀
+    if os.path.exists(args.out):  # 재개: 이미 생성된 (Id, perm, cap) 건너뜀
         with open(args.out, encoding="utf-8") as f:
-            done = {(r["Id"], tuple(r["perm"])) for r in map(json.loads, f)}
+            done = {(r["Id"], tuple(r["perm"]), r.get("cap", 0)) for r in map(json.loads, f)}
 
     jobs = []
+    skipped_no_variant = 0
     for _, row in df.iterrows():
+        caption = select_caption(row["Sentence"], args.cap_variant)
+        if caption is None:  # 변형이 j개 미만 — 이 실행에선 원본 뷰만 이미 있으므로 제외
+            skipped_no_variant += 1
+            continue
         for perm in perms:
-            if (row["Id"], tuple(perm)) not in done:
-                jobs.append((row, perm))
+            if (row["Id"], tuple(perm), args.cap_variant) not in done:
+                jobs.append((row, perm, caption))
 
     with open(args.out, "a", encoding="utf-8") as fout:
         for s in tqdm(range(0, len(jobs), args.batch), desc=f"predict:{args.split}"):
             chunk = jobs[s : s + args.batch]
             ok, messages = [], []
-            for row, perm in chunk:
+            for row, perm, caption in chunk:
                 try:
                     frames = load_frames(row, crop=not args.no_crop)
                 except OSError as e:
@@ -203,15 +228,18 @@ def main():
                     continue
                 frames = [frames[perm[j]] for j in range(N_FRAMES)]
                 ok.append((row, perm))
-                messages.append(build_messages(frames, row["Sentence"], args.style))
+                messages.append(build_messages(frames, caption, args.style))
             if not messages:
                 continue
             texts = generate_batch(model, processor, messages, max_new, device)
             for (row, perm), text in zip(ok, texts):
-                fout.write(json.dumps(
-                    {"Id": row["Id"], "perm": perm, "text": text}, ensure_ascii=False
-                ) + "\n")
+                rec = {"Id": row["Id"], "perm": perm, "text": text}
+                if args.cap_variant > 0:  # 기본 경로의 raw 스키마는 그대로 (aggregate 무영향)
+                    rec["cap"] = args.cap_variant
+                fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
             fout.flush()
+    if skipped_no_variant:
+        print(f"[캡션 변형 부족 제외] cap_variant={args.cap_variant}: {skipped_no_variant}개 샘플")
     print(f"saved: {args.out} (+{len(jobs)} generations)")
 
 
