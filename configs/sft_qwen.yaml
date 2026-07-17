@@ -36,12 +36,20 @@ train:
   train_on_responses_only: true
 
 data:
-  style: mid                     # cot | mid | short (W2 ablation으로 확정)
+  style: mid                     # cot | mid | short — **미검증 기본값**. reports/preprocessing.md
+                                 # B2("타깃 포맷 cot/mid/short")는 val EM 칸이 비어 있다(미실행).
+                                 # 알려진 부작용(2026-07-15 실측): mid는 orderable이 "Order:"로,
+                                 # no_ordering이 "Conclusion:"으로 시작해 ORDERABLE/UNORDERABLE
+                                 # 결정이 토큰 0에서 난다. 학습 타깃 84.5%가 "Order:"라 모드 붕괴 —
+                                 # 생성 6,552건 전부 "Order:"로 시작하고 UNORDERABLE 출력 0건.
   letterbox_crop: true
   perm_augment: true
-  oversample_no_ordering: 2      # _0707: UNORDERABLE 신호 보강 (x3 아님 — identity 과베팅 경계)
+  oversample_no_ordering: 1      # _0715: 2 -> 1. hard_cases_path가 no_ordering에 repeats~4를
+                                 # 이미 주므로 x2와 곱하면 이중 부스팅 (비중 40.5% — identity 과베팅).
+                                 # 1로 두면 25.4%로 _0707의 검증된 26.8%와 동등, 재분배만 일어남.
   caption_aug_prob: 0.45
   caption_aug_source: mix        # rule variants + caption_llm_variants when present
   llm_caption_field: caption_llm_variants
+  hard_cases_path: outputs/hard_train_cases.csv   # 상대경로: 로컬=repo/outputs, Colab=cwd(/content)/outputs
   hard_aug_repeats_field: caption_aug_repeats
   hard_aug_max_repeats: 5

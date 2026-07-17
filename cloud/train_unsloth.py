@@ -125,6 +125,13 @@ def make_trainer(model, processor, dataset, cfg):
         dataset_kwargs={"skip_prepare_dataset": True},
         max_seq_length=t["max_seq_len"],
         dataset_num_proc=1,  # 순열 증강 rng 재현성
+        # 데이터 로더 워커: 기본 0이면 이미지 4장×배치를 GPU가 단일 프로세스로 기다려
+        # A100조차 굶는다 (2026-07-16 RunPod 실측: num_workers=0에서 37s/it, GPU util 0%).
+        # >0이면 증강 rng 재현성은 잃지만(워커별 rng 분기) 학습 품질엔 무해하고 수배 빨라진다.
+        # 볼륨 vCPU 수에 맞춰 config로 조절 (RunPod A100은 8 권장, 로컬 CPU 스모크는 0).
+        dataloader_num_workers=t.get("dataloader_num_workers", 0),
+        dataloader_persistent_workers=t.get("dataloader_num_workers", 0) > 0,
+        dataloader_pin_memory=True,
     )
     trainer = SFTTrainer(
         model=model,
@@ -142,6 +149,7 @@ def run(cfg_path, jsonl_path, data_dir, resume=False, limit=None, output_dir=Non
     train_overrides: GPU별 배치 조정 등 train 섹션 오버라이드.
       예) A100: train_overrides={"per_device_batch": 4, "grad_accum": 4}  # 유효 16 유지
     """
+    from src.train.targets import IDENTITY_PRIOR
     from src.train.vl_dataset import VLSFTDataset
 
     cfg = load_cfg(cfg_path)
@@ -163,6 +171,7 @@ def run(cfg_path, jsonl_path, data_dir, resume=False, limit=None, output_dir=Non
         hard_cases_path=cfg["data"].get("hard_cases_path"),
         hard_aug_repeats_field=cfg["data"].get("hard_aug_repeats_field", "caption_aug_repeats"),
         hard_aug_max_repeats=cfg["data"].get("hard_aug_max_repeats", 5),
+        identity_prior=cfg["data"].get("identity_prior", IDENTITY_PRIOR),
     )
     trainer = make_trainer(model, processor, dataset, cfg)
     trainer.add_callback(make_nan_guard())

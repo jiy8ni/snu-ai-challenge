@@ -30,10 +30,20 @@ def main():
         )
 
     limit = 32 if args.smoke and args.limit is None else args.limit
+    # output_dir 우선순위: --output-dir > config의 output_dir > 하드코딩 폴백.
+    # (2026-07-16 실측 버그: 이전엔 --output-dir 없으면 config를 무시하고 무조건
+    #  qwen25vl7b로 저장 -> 8B config가 지정한 qwen3vl8b_0716이 무시돼 병합이
+    #  엉뚱한 경로를 찾았다. config가 output_dir을 주면 그걸 존중한다.)
     output_dir = args.output_dir
     if output_dir is None:
-        name = "qwen25vl7b_smoke" if args.smoke else "qwen25vl7b"
-        output_dir = os.path.join(paths["outputs_dir"], name)
+        import yaml
+        with open(args.config, encoding="utf-8") as f:
+            cfg_out = yaml.safe_load(f).get("output_dir")
+        if cfg_out:
+            output_dir = cfg_out + "_smoke" if args.smoke else cfg_out
+        else:
+            name = "qwen25vl7b_smoke" if args.smoke else "qwen25vl7b"
+            output_dir = os.path.join(paths["outputs_dir"], name)
 
     overrides = {}
     if args.per_device_batch is not None:

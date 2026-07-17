@@ -2,7 +2,8 @@
 
 대회 이미지 데이터는 절대 포함하지 않는다 (Kaggle 대회 소스로 attach). 모델 가중치도
 용량상 별도 Dataset으로 올린다. 이 zip은 src/, configs/, cloud/, colab/,
-outputs/sft_*.jsonl, outputs/split.csv, docs/, tests/ 만 담는다.
+outputs/sft_*.jsonl, outputs/split.csv, outputs/hard_train_cases*.csv, docs/, tests/
+만 담는다.
 
 주의: 이 폴더는 pip의 kaggle CLI 패키지와 임포트 충돌을 피해 'kaggle'에서 'cloud'로 개명됨.
 
@@ -21,6 +22,12 @@ INCLUDE_FILES = [
     "outputs/split.csv",
     "outputs/sft_train.jsonl",
     "outputs/sft_val.jsonl",
+    "outputs/hard_train_cases.csv",   # 하드 재가중 (configs/sft_qwen.yaml data.hard_cases_path)
+    # _0716 라운드 (configs/sft_qwen8b.yaml + colab/qwen_vl_colab_0716.ipynb):
+    # 팀원 LLM 캡션 증강본. 하드 재가중 필드(caption_aug_repeats/prob/hard_score)가
+    # 레코드에 병합돼 있어 hard_cases_path 오버레이 없이 단독으로 쓴다.
+    "outputs/sft_train_llm_aug_hard_nogate.jsonl",
+    "outputs/hard_train_cases_nogate.csv",   # 채굴 영수증 (규정 문서화용, 학습엔 미사용)
     "PLAN.md",
 ]
 EXCLUDE_SUFFIX = (".pyc",)

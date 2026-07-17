@@ -1,0 +1,9 @@
+data_dir: /workspace/snuaichallenge_data
+train_csv: /workspace/snuaichallenge_data/train.csv
+test_csv: /workspace/snuaichallenge_data/test.csv
+sample_submission: /workspace/snuaichallenge_data/sample_submission.csv
+train_image_dir: /workspace/snuaichallenge_data/train
+test_image_dir: /workspace/snuaichallenge_data/test
+models_dir: /workspace/snuai/models
+outputs_dir: /workspace/snuai/outputs
+reports_dir: /workspace/snuai/reports

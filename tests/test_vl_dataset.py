@@ -1,10 +1,14 @@
-"""VLSFTDataset: no_ordering 오버샘플링 (이미지 로드 없이 레코드 구성만 검증)."""
+"""VLSFTDataset: no_ordering 오버샘플링 + plain 진실 증강 (이미지 로드 없이 레코드 구성만 검증)."""
 
 import json
 import re
 
+import pytest
+
 from src.preprocess.caption_events import split_events
+from src.train.targets import chronological_perm
 from src.train.vl_dataset import VLSFTDataset
+from src.utils.permutation import IDENTITY, parse_permutation, shuffle_rank_label
 
 
 def _write_jsonl(path, records):
@@ -139,3 +143,90 @@ def test_hard_cases_path_overrides_repeats_and_prob(tmp_path):
 
     assert len(ds) == 4
     assert "A skier jumps and then lands." in ds[0]["messages"][0]["content"][-1]["text"]
+
+
+# ---------------------------------------------------------------------------
+# plain 스타일 = 진실 라벨 증강 경로 (_0716). src/train/targets.py docstring 참조.
+# ---------------------------------------------------------------------------
+
+
+def _plain_ds(tmp_path, records, **kw):
+    p = tmp_path / "sft.jsonl"
+    _write_jsonl(p, records)
+    ds = VLSFTDataset(str(p), data_dir=".", style="plain", crop=False, seed=7, **kw)
+    # perm이 실제로 적용됐는지 보려면 이미지 자리에 인덱스를 넣어 되돌려 본다
+    ds.load_images = lambda _record, perm: [f"im{perm[j]}" for j in range(4)]
+    return ds
+
+
+def _perm_of(item):
+    """_plain_ds의 load_images 스텁이 심어둔 인덱스 -> 실제 적용된 perm."""
+    return [int(c["image"][2:]) for c in item["messages"][0]["content"] if c["type"] == "image"]
+
+
+def test_plain_labels_are_truthful_including_no_ordering(tmp_path):
+    """핵심 회귀 방지: no_ordering 레코드도 섞였으면 라벨이 따라가야 한다.
+
+    구 경로(augment_perm_and_rank)는 여기서 프레임을 섞고도 [1,2,3,4]를 가르쳤다.
+    """
+    records = [
+        {"images": ["a.jpg"] * 4, "caption": "c", "events": None,
+         "rank": [1, 2, 3, 4], "no_ordering": True},
+        {"images": ["a.jpg"] * 4, "caption": "c", "events": None,
+         "rank": [3, 1, 2, 4], "no_ordering": False},
+    ]
+    ds = _plain_ds(tmp_path, records)
+    for i in range(len(ds)):
+        for _ in range(40):
+            item = ds[i]
+            target = item["messages"][1]["content"][0]["text"]
+            label = parse_permutation(target)
+            perm = _perm_of(item)
+            # 라벨이 실제 프레임 재배치와 일치하는가
+            assert shuffle_rank_label(ds.records[i]["rank"], perm) == label
+            assert "UNORDERABLE" not in target
+
+
+def test_plain_identity_label_implies_chronological_perm(tmp_path):
+    """identity 타깃이 나온 뷰는 프레임이 실제로 시간순으로 배치돼 있어야 한다."""
+    records = [{"images": ["a.jpg"] * 4, "caption": "c", "events": None,
+                "rank": [3, 1, 2, 4], "no_ordering": False}]
+    ds = _plain_ds(tmp_path, records)
+    n_identity = 0
+    for _ in range(200):
+        item = ds[0]
+        label = parse_permutation(item["messages"][1]["content"][0]["text"])
+        perm = _perm_of(item)
+        if label == IDENTITY:
+            n_identity += 1
+            assert perm == chronological_perm([3, 1, 2, 4])
+    assert n_identity > 0, "identity_prior=0.155인데 200뷰에서 identity가 한 번도 안 나왔다"
+
+
+@pytest.mark.parametrize("prior,expect_identity", [(1.0, True), (0.0, False)])
+def test_plain_identity_prior_boundaries(tmp_path, prior, expect_identity):
+    records = [{"images": ["a.jpg"] * 4, "caption": "c", "events": None,
+                "rank": [2, 4, 1, 3], "no_ordering": False}]
+    ds = _plain_ds(tmp_path, records, identity_prior=prior)
+    labels = [parse_permutation(ds[0]["messages"][1]["content"][0]["text"]) for _ in range(30)]
+    assert all((lab == IDENTITY) is expect_identity for lab in labels)
+
+
+def test_plain_rejects_bad_identity_prior(tmp_path):
+    p = tmp_path / "sft.jsonl"
+    _write_jsonl(p, _records())
+    with pytest.raises(AssertionError):
+        VLSFTDataset(str(p), data_dir=".", style="plain", identity_prior=1.5)
+
+
+def test_old_styles_keep_no_ordering_special_case(tmp_path):
+    """구 스타일(mid)은 건드리지 않았음을 명시 — 구 체크포인트 재현 보장."""
+    records = [{"images": ["a.jpg"] * 4, "caption": "c", "events": None,
+                "rank": [1, 2, 3, 4], "no_ordering": True}]
+    p = tmp_path / "sft.jsonl"
+    _write_jsonl(p, records)
+    ds = VLSFTDataset(str(p), data_dir=".", style="mid", crop=False, seed=7)
+    ds.load_images = lambda _record, _perm: ["im1", "im2", "im3", "im4"]
+    target = ds[0]["messages"][1]["content"][0]["text"]
+    assert "UNORDERABLE" in target
+    assert parse_permutation(target) == IDENTITY

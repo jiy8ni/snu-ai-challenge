@@ -1,0 +1,72 @@
+# Track B (Qwen3-VL-8B QLoRA SFT, Unsloth/A100) — **_0716 No_ordering 재해석 라운드**
+#
+# 기준선: 8B + mid + TTA8 = LB 0.88 (_0712). 이 config는 거기서 **데이터 레시피만** 바꾼다.
+#   - style: mid -> plain (UNORDERABLE 개념 제거, 순수 24-way)
+#   - 증강: no_ordering 특례 제거, 라벨이 항상 진실 (identity_prior가 15.5% 사전확률 담당)
+#   - 근거: No_ordering은 "정렬 불가"가 아니라 "출제자가 안 섞음"이다.
+#     상세는 src/train/targets.py docstring + reports/preprocessing.md "No_ordering 재해석".
+#
+# Qwen3-VL-8B 원본 공개 2025-10-15 (<=2026-05-31 규정 충족, docs/rules.md).
+# 8B는 T4 학습 불가 — A100 40GB / L4 24GB 전용. 4bit QLoRA 가중치 ~6GB.
+model: unsloth/Qwen3-VL-8B-Instruct   # load_in_4bit로 unsloth dynamic 4bit 자동 매핑
+                                      # 명시 4bit 원하면: unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit
+load_in_4bit: true                    # nf4, compute dtype bf16 (A100)
+output_dir: /content/outputs/qwen3vl8b_0716   # 노트북에서 Drive 경로로 오버라이드
+
+pixels:
+  min: 25088      # 32 * 28 * 28  — 작은 프레임 강제 업스케일 방지 (Qwen3-VL도 28px 패치)
+  max: 250880     # 320 * 28 * 28 — 640x360도 native, 이상치만 캡. OOM 시 200704(256*28^2)
+
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0.0
+  finetune_vision_layers: true
+  finetune_language_layers: true
+  finetune_attention_modules: true
+  finetune_mlp_modules: true
+
+train:
+  epochs: 3                      # _0707과 동일 (수렴 여유)
+  per_device_batch: 1            # 8B 안전 기본값. A100 40GB 여유 있으면 노트북 OVERRIDES {2, 8}
+  grad_accum: 16                 # 유효 배치 16 고정 (7B/3B와 비교 가능성 유지)
+  lr: 1.0e-4
+  scheduler: cosine
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 0.3             # fp16 안정화: 낮게 시작 (A100 bf16이면 무해)
+  max_seq_len: 2048
+  seed: 42
+  save_steps: 200                # 세션 12h 초과 대비 체크포인트
+  save_total_limit: 2            # 오래된 checkpoint-* 자동 삭제
+  logging_steps: 10
+  train_on_responses_only: true
+  dataloader_num_workers: 8   # RunPod A100 vCPU에 맞춰 (num_workers=0이면 GPU가 이미지 로딩 대기 -> 37s/it)  # Qwen3-VL도 ChatML(<|im_start|>) — collator 토큰 그대로 동작
+
+data:
+  style: plain                   # _0716: mid -> plain. UNORDERABLE 개념 제거, Order/Answer 2줄.
+                                 # mid의 부작용(토큰 0에서 84.5% 편향에 눌려 UNORDERABLE 생성
+                                 # 0/6,552)이 구조적으로 사라진다. src/train/targets.py 참조.
+  identity_prior: 0.155          # _0716 신규: plain 전용. 타깃 라벨이 identity(=프레임이 이미
+                                 # 시간순)일 확률 = test 실측 사전확률(train 1478/9535=0.1550).
+                                 # 균등(1/24=0.042)으로 두면 "특정 불가 시 identity 베팅"(최빈
+                                 # 라벨이라 최적)을 잃는다.
+  letterbox_crop: true
+  perm_augment: true             # plain이면 augment_perm_truthful 경로 (라벨 항상 진실)
+  oversample_no_ordering: 1      # **plain에선 반드시 1(off)**. identity 비중은 identity_prior가
+                                 # 전담하므로 ×2와 곱하면 이중 부스팅 -> identity 과베팅.
+  caption_aug_prob: 0.45         # 팀원 LLM 증강본 레코드의 caption_aug_prob이 있으면 그쪽 우선
+  caption_aug_source: mix        # rule variants + caption_llm_variants (전달본 7,829건 보유)
+  llm_caption_field: caption_llm_variants
+  # hard_cases_path 생략: 전달본 sft_train_llm_aug_hard_nogate.jsonl에 caption_aug_repeats/
+  # caption_aug_prob/hard_score가 레코드로 병합돼 있어 별도 CSV 오버레이가 불필요하다.
+  # (outputs/hard_train_cases_nogate.csv는 채굴 영수증 — 규정 문서화용 보관)
+  hard_aug_repeats_field: caption_aug_repeats
+  hard_aug_max_repeats: 1        # **_0716 Phase 1: 하드 반복 전면 off (max=1로 전 레코드 1회).**
+                                 # 전달본의 caption_aug_repeats(no_ordering 96%가 5)는 구 모델
+                                 # tta1+게이트off 채굴의 아티팩트다 — 같은 모델이 tta8 투표에선
+                                 # no_ordering EM 0.043이 아니라 0.596. 고장난 측정이라 근거가 없어
+                                 # 이번 라운드는 반복을 끄고 "증강 버그 수정" 효과만 깨끗이 잰다.
+                                 # 진짜 부스팅은 Phase 1.5에서 이 모델 자신의 오답으로 재채굴
+                                 # (colab H1' 셀 → hard_cases.py --fold train --tta 4). caption_aug_prob은
+                                 # 반복과 무관하게 유지되므로 캡션 다양성 이득은 그대로다.

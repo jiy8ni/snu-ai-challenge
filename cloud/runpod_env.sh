@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
+# NOTE: 이 파일은 `source`로 실행된다 (환경변수를 현재 셸에 남겨야 하므로).
+# 따라서 `set -euo pipefail`을 두면 안 된다 — source 시 그 옵션이 대화형 셸에
+# 눌러앉아, 이후 non-zero exit 하나에 셸(tmux 창)이 통째로 죽는다. 일부러 뺐다.
+#
 # Source this file before installing packages, training, or inference:
 #   source cloud/runpod_env.sh
 #

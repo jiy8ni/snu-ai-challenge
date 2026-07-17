@@ -33,7 +33,7 @@ from src.train.vl_dataset import build_messages
 from src.utils.permutation import N_FRAMES
 from src.utils.runtime import configure_disk_cache
 
-MAX_NEW_TOKENS = {"short": 32, "mid": 64, "cot": 300}
+MAX_NEW_TOKENS = {"short": 32, "mid": 64, "cot": 300, "plain": 64}
 
 # 학습 설정(configs/sft_qwen.yaml pixels)과 동일하게 유지할 것.
 # 병합 모델의 preprocessor_config에 캡이 유실될 수 있어(2026-07-06 실측: test 대형
@@ -170,7 +170,8 @@ def main():
     ap.add_argument("--model", required=True)
     ap.add_argument("--split", default="test", choices=["train", "test"])
     ap.add_argument("--fold", default=None, help="train일 때 split.csv fold 필터 (예: val)")
-    ap.add_argument("--style", default="mid", choices=["short", "mid", "cot"])
+    ap.add_argument("--style", default="mid", choices=["short", "mid", "cot", "plain"],
+                    help="학습 시 쓴 타깃 스타일과 반드시 일치시킬 것 (_0716 라운드는 plain)")
     ap.add_argument("--tta", type=int, default=4)
     ap.add_argument("--cap-variant", type=int, default=0,
                     help="캡션 TTA 뷰 인덱스 (0=원본, j>=1이면 caption_variants[j-1] 사용)")

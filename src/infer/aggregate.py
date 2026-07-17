@@ -20,6 +20,7 @@
 
 import argparse
 import json
+import os
 from collections import Counter, defaultdict
 
 import numpy as np
@@ -88,6 +89,28 @@ def aggregate_votes(votes, ban_identity=False, disperse_gate=True,
     return list(best), "borda_tie"
 
 
+def votes_per_sample_dist(by_id):
+    """{표 수: 샘플 수}. 표 수가 균일해야 disperse_top이 전 샘플에 같은 의미를 갖는다."""
+    return dict(sorted(Counter(len(v) for v in by_id.values()).items()))
+
+
+def warn_if_inhomogeneous(by_id, label="raw"):
+    """샘플별 표 수가 섞여 있으면 경고 (2026-07-15 사고: cap 뷰 혼입).
+
+    predict.py의 재개 키는 (Id, perm, cap)이고 aggregate는 cap을 무시해 캡션-TTA
+    뷰를 그냥 표로 센다. 그래서 --cap-variant 실행이 중단되면 한 파일 안에
+    8표 샘플과 16표 샘플이 섞이고, 표 수에 맞춰 튜닝하는 disperse_top이
+    샘플마다 다른 의미가 된다 (조용히 틀린 답). 반환값 = 균일 여부.
+    """
+    dist = votes_per_sample_dist(by_id)
+    if len(dist) > 1:
+        print(f"[경고] {label}: 샘플별 표 수가 불균일 {dist} — cap 뷰 혼입이나 "
+              "중단된 predict 실행일 수 있다. disperse_top/합의도 게이트가 샘플마다 "
+              "다른 의미를 가지므로 결과를 의사결정에 쓰지 말 것 "
+              "(cap 분포 확인: Counter(r.get('cap',0) for r in raw))")
+    return len(dist) == 1
+
+
 def aggregate_file(raw_path, ban_identity=False, disperse_gate=True,
                    disperse_top=1, identity_quota=None):
     """raw jsonl -> (pred_by_id, 통계 dict)."""
@@ -96,6 +119,7 @@ def aggregate_file(raw_path, ban_identity=False, disperse_gate=True,
         for line in f:
             rec = json.loads(line)
             by_id[rec["Id"]].append(parse_vote(rec["text"], rec["perm"]))
+    warn_if_inhomogeneous(by_id, label=os.path.basename(raw_path))
 
     preds, reasons = {}, Counter()
     n_votes = n_fail = 0
@@ -109,6 +133,7 @@ def aggregate_file(raw_path, ban_identity=False, disperse_gate=True,
     stats = {
         "n_samples": len(by_id),
         "votes_per_sample": n_votes / max(len(by_id), 1),
+        "votes_per_sample_dist": votes_per_sample_dist(by_id),
         "parse_fail_rate": n_fail / max(n_votes, 1),
         "identity_rate": sum(p == list(IDENTITY) for p in preds.values()) / max(len(preds), 1),
         "reasons": dict(reasons),

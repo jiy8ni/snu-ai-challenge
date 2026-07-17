@@ -1,10 +1,19 @@
 """sft jsonl -> VLM SFT 레코드 (Track B, Unsloth/TRL vision 포맷) + 순열 증강.
 
-증강 규칙 (targets.augment_perm_and_rank):
+증강 규칙은 style에 따라 **두 갈래**다 (src/train/targets.py docstring 참조):
+
+  style="plain" (_0716 재해석 레시피) -> targets.augment_perm_truthful
+    - no_ordering 특례 **없음**. 라벨이 항상 진실이다.
+    - 확률 identity_prior(기본 0.155 = test 실측)로 시간순 배치 -> 라벨 [1,2,3,4]
+    - 나머지는 라벨이 identity가 아닌 균등 perm
+
+  style=cot|mid|short (구 라운드) -> targets.augment_perm_and_rank
+    - no_ordering 샘플은 배치와 무관하게 타깃 [1,2,3,4] 고정 (**거짓 라벨** — 오독의 산물)
+    - orderable 샘플은 증강 후에도 identity rank가 되지 않도록 재추출
+
+공통:
   - 매 __getitem__마다 프레임 재배치 perm을 샘플링해 이미지 순서와 rank 라벨을 함께 변환
   - 타깃 텍스트는 build_target으로 **재생성** (jsonl의 정적 cot 필드는 사용 금지)
-  - no_ordering 샘플은 배치와 무관하게 타깃 [1,2,3,4] 고정
-  - orderable 샘플은 증강 후에도 identity rank가 되지 않도록 재추출
   - 선택적으로 캡션의 시간 연결어를 규칙 기반으로 바꾸되 이벤트 순서는 보존
 
 재현성: rng가 호출 순서대로 전진한다 -> dataloader_num_workers=0 권장.
@@ -20,7 +29,13 @@ from PIL import Image
 
 from src.preprocess.caption_augment import augment_caption, caption_variants
 from src.preprocess.frame_quality import crop_letterbox
-from src.train.targets import augment_perm_and_rank, build_instruction, build_target
+from src.train.targets import (
+    IDENTITY_PRIOR,
+    augment_perm_and_rank,
+    augment_perm_truthful,
+    build_instruction,
+    build_target,
+)
 
 
 def load_records(jsonl_path):
@@ -130,13 +145,20 @@ class VLSFTDataset:
         oversample_no_ordering=1, caption_aug_prob=0.0,
         caption_aug_source="rule", llm_caption_field="caption_llm_variants",
         hard_cases_path=None, hard_aug_repeats_field="caption_aug_repeats",
-        hard_aug_max_repeats=5,
+        hard_aug_max_repeats=5, identity_prior=IDENTITY_PRIOR,
     ):
         """oversample_no_ordering: no_ordering 레코드를 n배로 복제 (1=off).
         매 __getitem__마다 perm 증강이 새로 뽑히므로 복제본도 서로 다른 뷰가 된다.
-        UNORDERABLE recall(_0705 실측 22%) 보강용 — 제공 데이터 증강이라 규정 합법."""
+        UNORDERABLE recall(_0705 실측 22%) 보강용 — 제공 데이터 증강이라 규정 합법.
+
+        identity_prior: **style="plain"에서만** 쓰인다. 타깃 라벨이 identity(=프레임이
+        이미 시간순)일 확률. 기본 0.155 = test 실측 사전확률.
+        주의: plain에서 oversample_no_ordering을 함께 켜면 identity 노출이 이중으로
+        부스팅된다 — plain 레시피에선 identity 비중을 identity_prior가 전담하므로
+        oversample_no_ordering=1(off)로 둘 것 (configs/sft_qwen8b.yaml 참조)."""
         assert 0.0 <= caption_aug_prob <= 1.0, "caption_aug_prob must be in [0, 1]"
         assert caption_aug_source in ("rule", "llm", "mix"), "caption_aug_source must be rule|llm|mix"
+        assert 0.0 <= identity_prior <= 1.0, "identity_prior must be in [0, 1]"
         self.records = load_records(jsonl_path)[: limit or None]
         overrides = _load_hard_case_overrides(hard_cases_path)
         if overrides:
@@ -163,6 +185,7 @@ class VLSFTDataset:
         self.caption_aug_prob = caption_aug_prob
         self.caption_aug_source = caption_aug_source
         self.llm_caption_field = llm_caption_field
+        self.identity_prior = identity_prior
 
     def __len__(self):
         return len(self.records)
@@ -175,7 +198,11 @@ class VLSFTDataset:
 
     def __getitem__(self, i):
         rec = self.records[i]
-        if self.augment:
+        if self.augment and self.style == "plain":
+            # 진실 라벨 증강 — no_ordering 특례 없음. rec["rank"]는 no_ordering 레코드도
+            # [1,2,3,4]로 이미 진실이다 (cot_target.py가 CSV Answer를 그대로 저장).
+            perm, rank = augment_perm_truthful(rec["rank"], self.rng, self.identity_prior)
+        elif self.augment:
             perm, rank = augment_perm_and_rank(rec["rank"], rec["no_ordering"], self.rng)
         else:
             perm, rank = [0, 1, 2, 3], rec["rank"]

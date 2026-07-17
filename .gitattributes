@@ -1,0 +1,6 @@
+# 셸 스크립트는 반드시 LF로 저장한다. Windows/OneDrive에서 CRLF로 저장되면
+# RunPod/Linux에서 `source`·실행 시 `$'\r': command not found`로 깨진다 (2026-07-16 실측).
+*.sh text eol=lf
+
+# YAML 설정도 Linux 도구가 읽으므로 LF 고정 (paths_*.yaml, sft_*.yaml)
+*.yaml text eol=lf

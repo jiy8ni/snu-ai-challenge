@@ -2,7 +2,7 @@
 
 import random
 
-from src.infer.aggregate import aggregate_votes, parse_vote
+from src.infer.aggregate import aggregate_votes, votes_per_sample_dist, warn_if_inhomogeneous, parse_vote
 from src.train.targets import build_target
 from src.utils.permutation import IDENTITY, shuffle_rank_label
 
@@ -125,3 +125,21 @@ def test_identity_quota_overrides_mode():
     assert aggregate_votes(votes) == ([2, 1, 3, 4], "mode")
     assert aggregate_votes(votes, identity_quota=2) == (IDENTITY, "identity_quota")
     assert aggregate_votes(votes, identity_quota=3) == ([2, 1, 3, 4], "mode")
+
+
+def test_votes_per_sample_dist():
+    by_id = {"a": [1, 2, 3, 4], "b": [1, 2, 3, 4], "c": [1] * 8}
+    assert votes_per_sample_dist(by_id) == {4: 2, 8: 1}
+
+
+def test_warn_if_inhomogeneous_detects_cap_pollution(capsys):
+    """2026-07-15 사고 회귀 잠금: cap 뷰 혼입으로 표 수가 8/16으로 갈리면 경고해야 한다.
+
+    aggregate는 cap을 무시하고 전부 표로 세므로, 중단된 --cap-variant 실행이 남긴
+    파일은 샘플마다 표 수가 달라져 disperse_top이 다른 의미를 갖는다 (조용히 틀린 답).
+    """
+    assert warn_if_inhomogeneous({"a": [1] * 8, "b": [1] * 8}) is True
+    assert capsys.readouterr().out == ""
+
+    assert warn_if_inhomogeneous({"a": [1] * 8, "b": [1] * 16}) is False
+    assert "불균일" in capsys.readouterr().out

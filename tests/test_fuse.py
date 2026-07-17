@@ -1,5 +1,7 @@
 """융합 결정: 합의도 게이트·LL 재순위·ban_identity·폴백 검증."""
 
+import pytest
+
 from src.infer.fuse import consensus_of, fuse_all
 from src.infer.ll_score import UNORD_KEY
 from src.train.targets import format_answer
@@ -84,6 +86,53 @@ def test_ban_identity_in_ll_path():
 def test_missing_ll_falls_back_to_vote():
     votes = {"a": _votes(R_A, R_A, R_B, R_C)}
     assert fuse_all(votes, {}, "h1", k=3)["a"] == R_A  # 합의도 2 < 3이지만 LL 없음
+
+
+def test_vgate_keeps_vote_rank_when_p_identity_low():
+    """LL이 순서를 반대해도 vgate는 투표의 순서를 그대로 쓴다 (identity만 관여)."""
+    votes = {"a": _votes(R_A, R_A, R_B)}
+    ll = {"a": [_ll_view(format_answer(R_C))]}  # identity 사후확률 ~0
+    assert fuse_all(votes, ll, "vgate", p_identity_threshold=0.05)["a"] == R_A
+
+
+def test_vgate_returns_identity_when_p_identity_high():
+    """4/4 만장일치라도 LL 사후확률이 문턱을 넘으면 identity로 뒤집는다."""
+    votes = {"a": _votes(R_A, R_A, R_A, R_A)}
+    ll = {"a": [_ll_view(format_answer(IDENTITY), best_lp=0.0)]}
+    assert fuse_all(votes, ll, "vgate", p_identity_threshold=0.05)["a"] == IDENTITY
+
+
+def test_vgate_keeps_vote_identity_below_threshold():
+    """합집합 규칙: 사후확률이 낮아도 투표가 identity면 유지 (투표 게이트 P 0.9496)."""
+    votes = {"a": _votes(IDENTITY, IDENTITY, IDENTITY)}
+    ll = {"a": [_ll_view(format_answer(R_C))]}  # identity 사후확률 ~0
+    assert fuse_all(votes, ll, "vgate", p_identity_threshold=0.05)["a"] == IDENTITY
+
+
+def test_vgate_falls_back_to_vote_without_ll():
+    votes = {"a": _votes(R_A, R_A, R_B)}
+    assert fuse_all(votes, {}, "vgate", p_identity_threshold=0.05)["a"] == R_A
+
+
+def test_vgate_without_threshold_fails_loudly():
+    """문턱 없는 vgate는 알기 어려운 TypeError 대신 명시적으로 막는다."""
+    votes = {"a": _votes(R_A)}
+    ll = {"a": [_ll_view(format_answer(R_A))]}
+    with pytest.raises(AssertionError, match="p_identity_threshold"):
+        fuse_all(votes, ll, "vgate")
+
+
+def test_disperse_top_plumbed_through():
+    """fuse.py:63이 kwargs 없이 호출해 도달 불가였던 손잡이 — 회귀 잠금."""
+    votes = {"a": _votes(R_A, R_B)}  # 최빈 표수 1
+    assert fuse_all(votes, {}, "vote", disperse_top=1)["a"] == IDENTITY
+    assert fuse_all(votes, {}, "vote", disperse_gate=False)["a"] == R_A
+
+
+def test_identity_quota_plumbed_through():
+    votes = {"a": _votes(R_A, R_A, IDENTITY)}
+    assert fuse_all(votes, {}, "vote")["a"] == R_A                      # quota off
+    assert fuse_all(votes, {}, "vote", identity_quota=1)["a"] == IDENTITY
 
 
 def test_vote_policy_matches_aggregate_default():
