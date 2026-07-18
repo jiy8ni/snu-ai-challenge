@@ -28,6 +28,10 @@ INCLUDE_FILES = [
     # 레코드에 병합돼 있어 hard_cases_path 오버레이 없이 단독으로 쓴다.
     "outputs/sft_train_llm_aug_hard_nogate.jsonl",
     "outputs/hard_train_cases_nogate.csv",   # 채굴 영수증 (규정 문서화용, 학습엔 미사용)
+    # _0717 Phase 1.5 재채굴 부스팅 (configs/sft_qwen8b_v2*.yaml + docs/runpod.md §7.9):
+    "outputs/hard_train_cases_0716.csv",              # plain 모델 자신의 재채굴 가중치 + 영수증
+    "outputs/sft_train_llm_aug_hard_0717.jsonl",      # Variant A 재증강 학습 데이터
+    "outputs/sft_train_llm_aug_hard_0717.jsonl.calls.jsonl",  # API 호출 로그 (규정 §외부 API 보존 의무)
     "PLAN.md",
 ]
 EXCLUDE_SUFFIX = (".pyc",)
