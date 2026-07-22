@@ -159,9 +159,27 @@ RunPod A100 전용 (로컬 CPU에선 unsloth 미설치라 import 불가). 상세
 # 스모크 (옵티마이저 2스텝만)
 python -m cloud.grpo_custom --limit 16 --max-steps 2
 
-# 실학습
+# 실학습 (기본: K=8, 스텝당 ~2분 → 500스텝 ≈ 17h)
 python -m cloud.grpo_custom --limit 2000
+
+# 빠른 설정 (K=4 + 짧은 생성 + grad-ckpt off → 스텝당 ~1분 이하)
+python -m cloud.grpo_custom --limit 2000 \
+  --num-generations 4 --max-new-tokens 48 --no-grad-ckpt
 ```
+
+속도 레버 3종:
+
+- `--num-generations 4`: 생성·forward 비용 절반. pairwise shaping 덕에 K=4에서도
+  그룹 어드밴티지가 살아있다.
+- `--max-new-tokens 48`: plain 정상 출력(~40토큰)엔 영향 없고, EOS 없이 끝까지
+  달리는 퇴화 샘플의 낭비만 절감.
+- `--no-grad-ckpt`: gradient checkpointing을 꺼서 backward의 activation 재계산 제거
+  (30~40% 가속). A100 80GB + 8B 4bit면 감당 — **OOM이 나면 이 플래그만 빼면 원복**.
+
+중단·재개: `--save-steps`(기본 100)마다 `<out_dir>/lora`에 어댑터가 저장된다.
+`--resume-lora <out_dir>/lora`로 그 가중치에서 이어서 학습(옵티마이저 상태는 리셋 —
+이 규모에선 무시 가능). 2000개 완주는 필수가 아니다 — 중간 체크포인트로 언제든
+Gate C(val EM > 0.5687)를 재서 판정하면 된다.
 
 보상 로직만은 로컬에서 테스트 가능:
 

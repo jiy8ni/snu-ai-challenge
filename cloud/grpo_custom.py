@@ -25,14 +25,20 @@ import random
 import torch
 
 
-def _load_model(cfg, device):
-    """4bit QLoRA 모델 로드 + 언어층 LoRA. predict.load_model과 동일한 4bit 경로."""
+def _load_model(cfg, device, grad_ckpt=True):
+    """4bit QLoRA 모델 로드 + 언어층 LoRA. predict.load_model과 동일한 4bit 경로.
+
+    grad_ckpt=False면 gradient checkpointing 없이 로드 — backward에서 activation 재계산이
+    빠지므로 30~40% 가속. A100 80GB + 8B 4bit + 짧은 completion에선 VRAM이 감당한다
+    (OOM이 나면 --no-grad-ckpt를 빼서 원복).
+    """
     from unsloth import FastVisionModel
 
     from src.infer.predict import apply_pixel_caps
 
     model, processor = FastVisionModel.from_pretrained(
-        cfg["model"], load_in_4bit=True, use_gradient_checkpointing="unsloth",
+        cfg["model"], load_in_4bit=True,
+        use_gradient_checkpointing="unsloth" if grad_ckpt else False,
     )
     lo = cfg["lora"]
     model = FastVisionModel.get_peft_model(
@@ -111,6 +117,10 @@ def main():
     ap.add_argument("--save-steps", type=int, default=100)
     ap.add_argument("--output-dir", default=None)
     ap.add_argument("--max-steps", type=int, default=None, help="스모크용 옵티마이저 스텝 상한")
+    ap.add_argument("--no-grad-ckpt", action="store_true",
+                    help="gradient checkpointing 끔 — backward 가속. OOM 시 이 플래그 제거")
+    ap.add_argument("--resume-lora", default=None,
+                    help="저장된 LoRA 디렉토리(adapter_model.safetensors)에서 이어서 학습")
     args = ap.parse_args()
 
     from cloud.grpo_smoke import build_grpo_examples
@@ -132,8 +142,18 @@ def main():
     sft = args.sft_jsonl or os.path.join(paths["outputs_dir"], "sft_train.jsonl")
     assert os.path.exists(sft), f"학습 jsonl 없음: {sft}"
 
-    model, processor = _load_model(cfg, device)
+    model, processor = _load_model(cfg, device, grad_ckpt=not args.no_grad_ckpt)
     processor.tokenizer.padding_side = "left"   # 생성 기본(로그확률 함수가 필요시 right로 임시전환)
+
+    if args.resume_lora:
+        from safetensors.torch import load_file
+
+        from peft import set_peft_model_state_dict
+
+        sd_path = os.path.join(args.resume_lora, "adapter_model.safetensors")
+        assert os.path.exists(sd_path), f"어댑터 없음: {sd_path}"
+        set_peft_model_state_dict(model, load_file(sd_path))
+        print(f"LoRA 이어서 학습: {args.resume_lora} (옵티마이저 상태는 새로 시작)")
 
     examples = build_grpo_examples(cfg, sft, paths["data_dir"], args.limit)
     print(f"GRPO(custom) 데이터셋: {len(examples)} 프롬프트 | K={args.num_generations} | "
@@ -167,6 +187,8 @@ def main():
             running_em.append(sum(parse_permutation(c) == true_rank for c in comps) / len(comps))
 
             FastVisionModel.for_training(model)
+            if args.no_grad_ckpt:
+                model.gradient_checkpointing_disable()   # for_training이 되켤 수 있어 매번 확실히 끔
             logp = _completion_logprobs(model, processor, prompt, comps, images, device)  # [K] grad
             loss = -(adv.detach() * logp).mean() / args.accum
             loss.backward()
