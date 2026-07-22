@@ -123,8 +123,7 @@ snuaichallenge/
 - [frame_quality.py](src/preprocess/frame_quality.py): 영상 위아래에 생기는 **검은 띠(레터박스)를 잘라냅니다.** 전체의 21.5%가 해당되고, 효과가 확인된 유일한 정제 단계입니다.
 - [caption_events.py](src/preprocess/caption_events.py): 캡션 문장을 `then`/`finally` 같은 연결어 기준으로 **사건 단위로 쪼갭니다.** ("A했다, 그다음 B했다" → [A, B])
 - [caption_augment.py](src/preprocess/caption_augment.py): 같은 뜻의 캡션을 **연결어만 바꿔서 여러 버전으로** 만듭니다. 모델이 특정 표현에만 익숙해지지 않게 하는 학습 재료입니다.
-- [hard_cases.py](src/preprocess/hard_cases.py) / [hard_weights.py](src/preprocess/hard_weights.py): 모델이 **자주 틀리는 어려운 문제**를 찾아서, 그런 문제를 학습 때 더 자주 보여주도록 가중치를 매깁니다.
-- [llm_caption_augment.py](src/preprocess/llm_caption_augment.py): (선택) 규칙만으로 부족할 때, **외부 LLM으로 캡션을 다양하게 바꿔** 재료를 늘립니다. 규칙상 전처리에만 허용되며 **총 2만 5천 원 예산 안에서만** 쓰고, 비용·기록을 남깁니다.
+- [hard_cases.py](src/preprocess/hard_cases.py) / [hard_weights.py](src/preprocess/hard_weights.py): 모델이 **자주 틀리는 어려운 문제**를 찾아서, 그런 문제를 학습 때 더 자주 보여주도록 가중치를 매깁니다. (가중치는 전부 모델 자신의 예측 기반 — 외부 API 무관)
 
 **실험만 하고 최종 파이프라인엔 안 쓰는 것 (참고용):**
 - [no_ordering.py](src/preprocess/no_ordering.py), [semantic_features.py](src/preprocess/semantic_features.py): "이 샘플이 섞인 건지 아닌지"를 픽셀·이미지 특징만으로 맞혀보려 했지만 **효과가 없어서** 분석용으로만 남겨둠.

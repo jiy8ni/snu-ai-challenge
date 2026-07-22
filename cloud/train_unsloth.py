@@ -24,11 +24,23 @@ def load_cfg(path):
 def build_model(cfg):
     from unsloth import FastVisionModel
 
-    model, processor = FastVisionModel.from_pretrained(
-        cfg["model"],
+    load_kwargs = dict(
         load_in_4bit=cfg["load_in_4bit"],
         use_gradient_checkpointing="unsloth",
     )
+    grpo = cfg.get("grpo", {})
+    if grpo.get("use_vllm"):
+        # GRPO 비전 생성 경로: unsloth가 모델 로드 시 vLLM 엔진을 함께 띄운다.
+        # HF 생성은 멀티모달 프롬프트를 제대로 안 먹여 캡션만 나오는 버그가 있어(2026-07-21 확인),
+        # unsloth 공식 GRPO가 전제하는 vLLM 생성을 쓴다.
+        # ※ FastVisionModel의 vLLM 지원 여부·인자명은 unsloth 버전마다 다를 수 있다 —
+        #   설치된 버전의 공식 비전 GRPO 예제로 인자명(fast_inference 등)을 반드시 확인할 것.
+        load_kwargs.update(
+            fast_inference=True,
+            max_lora_rank=cfg["lora"]["r"],
+            gpu_memory_utilization=grpo.get("gpu_memory_utilization", 0.5),
+        )
+    model, processor = FastVisionModel.from_pretrained(cfg["model"], **load_kwargs)
     model = FastVisionModel.get_peft_model(
         model,
         finetune_vision_layers=cfg["lora"]["finetune_vision_layers"],
@@ -166,8 +178,6 @@ def run(cfg_path, jsonl_path, data_dir, resume=False, limit=None, output_dir=Non
         crop=cfg["data"]["letterbox_crop"], seed=cfg["train"]["seed"], limit=limit,
         oversample_no_ordering=cfg["data"].get("oversample_no_ordering", 1),
         caption_aug_prob=cfg["data"].get("caption_aug_prob", 0.0),
-        caption_aug_source=cfg["data"].get("caption_aug_source", "rule"),
-        llm_caption_field=cfg["data"].get("llm_caption_field", "caption_llm_variants"),
         hard_cases_path=cfg["data"].get("hard_cases_path"),
         hard_aug_repeats_field=cfg["data"].get("hard_aug_repeats_field", "caption_aug_repeats"),
         hard_aug_max_repeats=cfg["data"].get("hard_aug_max_repeats", 5),

@@ -1,0 +1,64 @@
+# RunPod 버전 — Qwen3-VL-8B GRPO (Phase 2), **클린 SFT 병합 모델 위에 EM + pairwise 보상**
+#
+# SFT는 정답 시퀀스 우도의 간접 최적화라 대회 지표(EM)와 어긋난다. GRPO는 모델이 실제로
+# 생성한 답에 EM을 직접 보상으로 주고, pairwise shaping으로 "거의 맞은 오답"에 부분 점수를
+# 줘 전멸 그룹(8개 생성이 전부 오답)에서도 학습 신호를 살린다 (희소 보상 보완).
+#
+# base 모델은 클린 SFT를 **병합한 모델**(아래 model). build_model이 그 위에 새 LoRA를 붙인다
+# (src/infer/predict.py·기존 0716 플로우와 동일). 실행: cloud/grpo_train.py (docs/runpod.md §8).
+# 착수 전 cloud/grpo_smoke.py로 루프 진입을 확정한다.
+model: /workspace/snuai/models/qwen3vl8b_clean_merged   # G1(클린 SFT) 병합 산출물
+load_in_4bit: false   # ★ GRPO는 bf16 로드. 4bit면 vLLM 동기화 시 LoRA→base merge가
+                      #   packed 양자화 텐서에서 실패(2026-07-21). 병합본은 디스크에 16bit라 자연스럽다.
+                      #   메모리: bf16 8B(~16GB)+vLLM 사본 → A100 80GB 필요. (최종 3090 추론은 별개로 4bit)
+output_dir: /workspace/snuai/outputs/qwen3vl8b_grpo
+
+runpod:
+  base_dir: /workspace/snuai          # 캐시·tmp 라우팅 (configure_disk_cache)
+
+pixels:
+  min: 25088      # 32 * 28 * 28  — SFT와 동일
+  max: 250880     # 320 * 28 * 28 — OOM 시 200704(256*28^2)
+
+lora:                # 병합 모델 위에 새 LoRA. GRPO는 언어 레이어만 학습한다.
+  r: 16
+  alpha: 16
+  dropout: 0.0
+  finetune_vision_layers: false  # vLLM은 비전 타워 LoRA를 생성에 못 붙임(PunicaWrapper 미지원)
+                                 # → 비전 LoRA를 학습하면 train/generate 불일치. SFT의 비전
+                                 # 학습은 이미 병합본에 있으므로 GRPO는 언어층만.
+  finetune_language_layers: true
+  finetune_attention_modules: true
+  finetune_mlp_modules: true
+
+train:
+  lr: 5.0e-6         # GRPO는 SFT lr(1e-4)보다 훨씬 낮게 (정책이 크게 흔들리지 않게)
+  grad_accum: 1      # num_generations가 per_device_batch를 나눠야 하는 TRL 제약 (grpo_train은 batch=num_generations)
+  seed: 42
+  logging_steps: 1
+
+data:                # 프롬프트 생성용 — plain 레시피 그대로 + hard 오버샘플
+  style: plain
+  identity_prior: 0.155
+  letterbox_crop: true
+  perm_augment: true
+  oversample_no_ordering: 1
+  caption_aug_prob: 0.45           # rule 기반 캡션 변형 (외부 LLM 증강은 철회)
+  # 클린 모델 자신의 오답 재채굴 CSV를 오버레이해 hard 케이스를 물리 오버샘플한다 (선택, .get으로 optional).
+  # 없으면 전체 train 균등으로 진행. docs/runpod.md §8 (G2)에서 생성.
+  # hard_cases_path: /workspace/snuai/outputs/hard_train_cases_clean.csv
+  hard_aug_repeats_field: caption_aug_repeats
+  hard_aug_max_repeats: 3          # GRPO는 물리 복제 = 프롬프트 중복 — SFT의 5보다 보수적
+
+grpo:
+  num_generations: 8               # 프롬프트당 샘플 수 (그룹-상대 어드밴티지)
+  max_completion_length: 48        # plain ~30tok + 여유
+  temperature: 1.0
+  beta: 0.04                       # KL 계수
+  epochs: 1
+  reward_weights: [1.0, 0.25]      # [EM, pairwise] — λ=0.25 (src/eval/pairwise_stats 분석: c=5 오답 38%)
+  use_vllm: true                   # vLLM 생성 (unsloth 공식 비전 GRPO 경로). HF 생성은
+                                   # 멀티모달 프롬프트 버그로 캡션만 나옴(2026-07-21 확인) → 반드시 vLLM.
+  gpu_memory_utilization: 0.5      # vLLM이 잡는 GPU 비율. 나머지는 학습용. A100 40GB면 0.4로 낮춰라.
+  save_steps: 100
+  save_total_limit: 2

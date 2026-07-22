@@ -6,9 +6,9 @@ Example:
     --fold val \
     --out /workspace/snuai/outputs/hard_val_cases.csv
 
-The output can be used by VLSFTDataset via data.hard_cases_path, or by
-llm_caption_augment.py to spend more LLM calls on samples that the model
-currently misses.
+The output can be used by VLSFTDataset via data.hard_cases_path to physically
+oversample and up-weight the samples that the model currently misses.  All
+weights are derived from the model's own predictions (no external API).
 """
 
 import argparse
@@ -74,7 +74,7 @@ def build_hard_case_table(
         em, tau, score = _score_case(pred, true, no_ordering)
         if only_wrong and em:
             continue
-        # 공유 수식(hard_weights.py) — llm_caption_augment의 기본 경로와 항상 일치.
+        # 공유 수식(hard_weights.py) — VLSFTDataset 오버레이 경로와 항상 일치.
         # 구식 --max-extra-repeats N은 max_repeats=N+1로 매핑된다.
         repeats = repeats_from_score(score, max_extra_repeats + 1)
         prob = prob_from_score(score, easy_caption_aug_prob, hard_caption_aug_prob)

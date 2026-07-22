@@ -1,11 +1,10 @@
 # Track B (Qwen3-VL-8B QLoRA SFT, Unsloth/A100) — **Phase 1.5 재채굴 부스팅 (_0717)**
 #
-# 기준선: 8B + plain + TTA8 = LB 0.90052 (_0716). 이 config는 거기서 **데이터 가중치만**
-# 바꾼다 (단일변수 원칙): hard_aug_max_repeats 1->5. 가중치 소스는 plain 모델 자신의
-# train-fold 오답 재채굴(outputs/hard_train_cases_0716.csv, docs/runpod.md §7.8/§7.9).
-#   - Variant A(기본): 재증강본 outputs/sft_train_llm_aug_hard_0717.jsonl 단독 학습
-#     (재가중 필드가 레코드에 병합돼 있어 hard_cases_path 불필요)
-#   - Variant B(zero-API): 0716 전달본 그대로 두고 아래 hard_cases_path 주석 해제
+# 기준선: 8B + plain + TTA8 (_0716). 이 config는 거기서 **데이터 가중치만** 바꾼다
+# (단일변수 원칙): hard_aug_max_repeats 1->5. 가중치 소스는 클린 모델 자신의 train-fold
+# 오답 재채굴(hard_train_cases_clean.csv, docs/runpod.md §8). 클린 SFT 데이터(sft_train.jsonl)
+# 위에 hard_cases_path CSV 오버레이로 재가중 필드(caption_aug_repeats/prob/hard_score)를
+# 덮어쓴다 — 외부 LLM 증강 없이 모델 예측 기반 재채굴만으로 부스팅한다.
 #
 # 이 파일은 RunPod 실행 경로(configs/sft_qwen8b_v2_runpod.yaml)의 Colab 문서 쌍둥이다.
 # 이번 라운드 실제 실행은 RunPod CLI (docs/runpod.md §7.9).
@@ -50,12 +49,10 @@ data:
   perm_augment: true             # plain이면 augment_perm_truthful (라벨 항상 진실)
   oversample_no_ordering: 1      # **plain에선 반드시 1(off)**. identity 비중은 identity_prior가
                                  # 전담하므로 ×2와 곱하면 이중 부스팅 -> identity 과베팅.
-  caption_aug_prob: 0.45
-  caption_aug_source: mix        # rule variants + caption_llm_variants
-  llm_caption_field: caption_llm_variants
-  # Variant B 전용 — CSV가 caption_aug_repeats/prob/hard_score를 레코드 위에 덮어쓴다
-  # (vl_dataset._load_hard_case_overrides 허용 키 4종). Variant A에선 반드시 주석 유지.
-  # hard_cases_path: /content/drive/MyDrive/snuai/hard_train_cases_0716.csv
+  caption_aug_prob: 0.45         # rule 기반 캡션 변형 확률 (외부 LLM 증강은 철회)
+  # CSV가 caption_aug_repeats/prob/hard_score를 레코드 위에 덮어쓴다
+  # (vl_dataset._load_hard_case_overrides 허용 키 3종). 클린 재채굴 CSV를 지정한다.
+  # hard_cases_path: /content/drive/MyDrive/snuai/hard_train_cases_clean.csv
   hard_aug_repeats_field: caption_aug_repeats
   hard_aug_max_repeats: 5        # **Phase 1.5의 유일한 레시피 변경.** 새 채굴 repeats(1..5)를
                                  # 물리 복제로 반영 — 0716은 1(off)이었다(구 tta1 채굴 아티팩트라).

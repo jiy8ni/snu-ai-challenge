@@ -47,9 +47,7 @@ data:
   oversample_no_ordering: 1      # _0715: 2 -> 1. hard_cases_path가 no_ordering에 repeats~4를
                                  # 이미 주므로 x2와 곱하면 이중 부스팅 (비중 40.5% — identity 과베팅).
                                  # 1로 두면 25.4%로 _0707의 검증된 26.8%와 동등, 재분배만 일어남.
-  caption_aug_prob: 0.45
-  caption_aug_source: mix        # rule variants + caption_llm_variants when present
-  llm_caption_field: caption_llm_variants
+  caption_aug_prob: 0.45         # rule 기반 캡션 변형 확률 (외부 LLM 증강은 철회)
   hard_cases_path: outputs/hard_train_cases.csv   # 상대경로: 로컬=repo/outputs, Colab=cwd(/content)/outputs
   hard_aug_repeats_field: caption_aug_repeats
   hard_aug_max_repeats: 5

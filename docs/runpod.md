@@ -27,11 +27,13 @@ source cloud/runpod_env.sh
 
 python -m pip install -U pip
 python -m pip install --no-cache-dir \
-  unsloth imagehash scikit-learn open_clip_torch \
+  unsloth trl datasets imagehash scikit-learn open_clip_torch \
   pandas pillow tqdm pyyaml qwen-vl-utils
 python -m pip cache purge || true
 ```
 
+`trl`·`datasets`는 Phase 2 GRPO(§8, `cloud/grpo_train.py`·`grpo_smoke.py`)에서 필요하다.
+SFT만 돌린다면 없어도 되지만, 같은 파드에서 이어 GRPO를 하므로 함께 설치해 둔다.
 `--no-cache-dir`를 쓰면 pip wheel cache가 남지 않는다. `runpod_env.sh`는
 Hugging Face, torch, triton, tmp 경로를 `/workspace/snuai/cache`로 돌린다.
 RunPod PyTorch 템플릿을 쓰면 torch/torchvision은 보통 이미 설치돼 있으므로 다시
@@ -65,64 +67,43 @@ python -m src.train.cot_target
 /workspace/snuai/outputs/sft_val.jsonl
 ```
 
-## 3.5 Hard-case-aware LLM caption augmentation
+## 3.5 Hard-case 재가중 (모델 예측 기반, 외부 API 무관)
 
-Rules update: LLM text augmentation is allowed when the external-generation
-budget stays under 30,000 KRW. Keep the default guard at 25,000 KRW unless you
-explicitly want to spend the full allowance.
+> 외부 LLM 캡션 증강은 대회 규칙상 철회했다. 캡션 다양성은 학습 시점 규칙 기반
+> 변형(`caption_augment.py`)만으로 확보한다. Hard-case 부스팅은 모델 자신의 오답을
+> 물리 오버샘플하는 방식이며 외부 생성이 전혀 없다.
 
-To weight `sft_train.jsonl`, build predictions for the same train fold IDs.
-Do not use test information. A validation-fold hard-case file is useful for
-diagnosis, but it will not match `sft_train.jsonl` IDs.
+직전 체크포인트로 train fold를 재채점해, 자주 틀리는 샘플에 반복 가중치를 매긴다.
+test 정보는 쓰지 않는다.
 
 ```bash
 python -m src.infer.predict \
-  --model /workspace/snuai/models/qwen25vl7b_merged \
+  --model /workspace/snuai/models/qwen3vl8b_merged \
   --split train --fold train --tta 4 --batch 8 \
-  --style mid --out /workspace/snuai/outputs/raw_train.jsonl
+  --style plain --out /workspace/snuai/outputs/raw_train.jsonl
 
 python -m src.infer.aggregate \
   --raw /workspace/snuai/outputs/raw_train.jsonl \
   --out /workspace/snuai/outputs/pred_train.csv
 ```
 
-Turn missed/low-tau train samples into augmentation weights:
+오답/low-tau train 샘플을 재가중 CSV로 변환:
 
 ```bash
 python -m src.preprocess.hard_cases \
   --pred /workspace/snuai/outputs/pred_train.csv \
   --fold train \
-  --out /workspace/snuai/outputs/hard_train_cases.csv
+  --out /workspace/snuai/outputs/hard_train_cases_clean.csv
 ```
 
-Generate LLM paraphrases once, offline:
-
-```bash
-export OPENAI_API_KEY=...
-python -m src.preprocess.llm_caption_augment \
-  --input /workspace/snuai/outputs/sft_train.jsonl \
-  --hard-cases /workspace/snuai/outputs/hard_train_cases.csv \
-  --out /workspace/snuai/outputs/sft_train_llm_aug.jsonl \
-  --max-cost-krw 25000
-```
-
-If you do not have a previous checkpoint yet, omit `--hard-cases`; every record
-gets the base number of variants and no hard-case extra repeats.
-
-For a cheap smoke test before spending API budget:
-
-```bash
-python -m src.preprocess.llm_caption_augment \
-  --input /workspace/snuai/outputs/sft_train.jsonl \
-  --out /workspace/snuai/outputs/sft_train_llm_aug_smoke.jsonl \
-  --max-records 5 --dry-run
-```
-
-Train on the augmented JSONL:
+CSV를 학습 시점 오버레이로 지정하면(`data.hard_cases_path`), VLSFTDataset이
+`caption_aug_repeats`만큼 레코드를 물리 복제하고 `caption_aug_prob`로 규칙 기반
+캡션 변형 강도를 조정한다. 별도의 데이터 생성 단계는 없다.
 
 ```bash
 python -m cloud.runpod_train \
-  --sft-jsonl /workspace/snuai/outputs/sft_train_llm_aug.jsonl \
+  --config configs/sft_qwen8b_v2_runpod.yaml \
+  --sft-jsonl /workspace/snuai/outputs/sft_train.jsonl \
   --per-device-batch 1 --grad-accum 16
 ```
 
@@ -217,7 +198,8 @@ rm -rf /workspace/snuai/outputs/qwen25vl7b_smoke
 
 `colab/qwen_vl_colab_0716.ipynb`의 셀 A1~C2를 RunPod 터미널 명령으로 옮긴 것.
 config는 **`configs/sft_qwen8b_runpod.yaml`**(8B·plain·identity_prior 0.155·하드반복 off),
-학습 데이터는 **팀원 LLM 증강본 `outputs/sft_train_llm_aug_hard_nogate.jsonl`**(zip에 포함).
+학습 데이터는 **클린 SFT 데이터 `outputs/sft_train.jsonl`**(외부 LLM 증강 없음, zip에 포함).
+캡션 다양성은 학습 시점 규칙 기반 변형(`caption_augment.py`)으로만 확보한다.
 
 ## 7.0 GPU·디스크 사양
 
@@ -234,8 +216,8 @@ unzip -qo /workspace/snuai_code_0716.zip -d /workspace/code   # zip을 볼륨에
 source cloud/runpod_env.sh                                    # 캐시/tmp를 /workspace/snuai로
 
 python -m pip install -U pip
-python -m pip install --no-cache-dir unsloth imagehash pandas pillow tqdm pyyaml qwen-vl-utils
-python -m pip cache purge || true
+python -m pip install --no-cache-dir unsloth trl datasets imagehash pandas pillow tqdm pyyaml qwen-vl-utils
+python -m pip cache purge || true   # trl·datasets는 Phase 2 GRPO(§8)에서 필요
 # 신선도 확인 (plain 스타일이 실제로 풀렸는지)
 python -c "import sys; sys.path.insert(0,'/workspace/code'); from src.train.targets import STYLES; assert 'plain' in STYLES; print('STYLES', STYLES)"
 ```
@@ -263,7 +245,7 @@ python -c "import sys; sys.path.insert(0,'/workspace/code'); from src.data.loade
 cd /workspace/code
 python - << 'PY'
 import json
-recs=[json.loads(l) for l in open('outputs/sft_train_llm_aug_hard_nogate.jsonl',encoding='utf-8')]
+recs=[json.loads(l) for l in open('outputs/sft_train.jsonl',encoding='utf-8')]
 n=len(recs); n_no=sum(bool(r['no_ordering']) for r in recs)
 bad=[r['Id'] for r in recs if r['no_ordering'] and r['rank']!=[1,2,3,4]]
 assert not bad, f'no_ordering인데 rank!=identity {len(bad)}건 — 진실 증강 전제 위반'
@@ -275,7 +257,7 @@ PY
 ## 7.4 B1·B2) 스모크 → 본 학습
 
 ```bash
-SFT=/workspace/code/outputs/sft_train_llm_aug_hard_nogate.jsonl
+SFT=/workspace/code/outputs/sft_train.jsonl
 CFG=configs/sft_qwen8b_runpod.yaml
 
 # B1) 스모크 (32샘플)
@@ -379,47 +361,33 @@ python -m src.preprocess.hard_cases --pred /workspace/snuai/outputs/pred_trainfo
 
 전제: §7.8이 `hard_train_cases_0716.csv`(8,582행)를 만들었다. **변경점은 데이터 가중치 하나**
 (`hard_aug_max_repeats 1→5` + 이 모델 자신의 오답 재채굴); 그 외 레시피(plain, identity_prior
-0.155, oversample 1, lr/epochs/seed)는 0716과 동일하다(단일변수 원칙).
+0.155, oversample 1, lr/epochs/seed)는 클린 SFT와 동일하다(단일변수 원칙).
 
-- **Variant A (기본, 처방)**: 새 CSV로 LLM top-up 재증강 → 새 jsonl 단독 학습(`hard_cases_path` 없음).
-- **Variant B (zero-API 폴백)**: 0716 jsonl 그대로 + v2 config의 `hard_cases_path` 오버레이만 해제.
+경로는 하나뿐이다(zero-API): 클린 데이터 `sft_train.jsonl` 그대로 두고, v2 config의
+`hard_cases_path`를 재채굴 CSV로 지정해 오버레이한다. 외부 생성 단계는 없다 — VLSFTDataset이
+`caption_aug_repeats`만큼 레코드를 물리 복제하고 `caption_aug_prob`로 규칙 기반 캡션 변형
+강도만 조정한다.
 
-### (a) Variant A — LLM top-up 재증강 [로컬, API-bound]
+### (a) v2 config에 재채굴 CSV 오버레이 지정 [로컬]
 
-```bash
-# dry-run으로 콜 수·추정 비용 먼저 (API 호출 없음)
-python -m src.preprocess.llm_caption_augment \
-  --input outputs/sft_train_llm_aug_hard_nogate.jsonl \
-  --hard-cases outputs/hard_train_cases_0716.csv \
-  --out outputs/sft_train_llm_aug_hard_0717.jsonl \
-  --easy-base-variants 0 --max-cost-krw 3000 --dry-run
-# 본 실행: --dry-run 제거 (OPENAI_API_KEY 필요). 필요분만 top-up, 기존 변형은 보존·연장.
+`configs/sft_qwen8b_v2_runpod.yaml`의 `data.hard_cases_path` 주석을 해제해 §7.8 산출
+CSV를 가리키게 한다.
+
+```yaml
+  hard_cases_path: /workspace/snuai/outputs/hard_train_cases_0716.csv
 ```
 
-`--easy-base-variants 0`: 정답(score≤0) 레코드의 API 콜을 전면 생략해 예산을 hard에 집중.
-영수증은 `<out>.calls.jsonl`에 자동 append(규정 §외부 API 보존 의무). 크래시 중단 시 `--input`을
-부분 산출물로 바꿔 재실행(변형 재구매 없음). `skipped_budget>0`이어도 산출물은 유효하다
-(hard_score 내림차순 지출 + 재가중 필드는 예산과 무관하게 전 레코드에 기록됨).
-
-### (b) B0') 새 jsonl 스키마 게이트 [로컬 + pod 양쪽 — 전송 무결성 겸검]
+### (b) B0') 재가중 CSV 게이트 [로컬 + pod 양쪽 — 전송 무결성 겸검]
 
 ```bash
 python - << 'PY'
-import json, collections
-OLD='outputs/sft_train_llm_aug_hard_nogate.jsonl'   # pod: /workspace/code/outputs/...
-NEW='outputs/sft_train_llm_aug_hard_0717.jsonl'
-old=[json.loads(l) for l in open(OLD,encoding='utf-8')]
-new=[json.loads(l) for l in open(NEW,encoding='utf-8')]
-assert len(new)==8582 and len(old)==8582, f'records {len(new)}'
-n_no=sum(bool(r['no_ordering']) for r in new)
-bad=[r['Id'] for r in new if r['no_ordering'] and r['rank']!=[1,2,3,4]]
-assert not bad, f'no_ordering인데 rank!=identity {len(bad)}건 — 진실 증강 전제 위반'
-assert abs(n_no/8582-0.155)<0.01, f'no_ordering 비율 {n_no/8582:.4f}'
-oldv={r['Id']:len(r.get('caption_llm_variants') or []) for r in old}
-lost=[r['Id'] for r in new if len(r.get('caption_llm_variants') or [])<oldv.get(r['Id'],0)]
-assert not lost, f'기존 변형 유실 {len(lost)}건 — top-up 전제 위반'
-assert all(('hard_score' in r and 'caption_aug_prob' in r) for r in new), '재가중 필드 누락'
-rep=[min(max(int(float(r.get('caption_aug_repeats',1))),1),5) for r in new]
+import csv, collections
+CSVP='outputs/hard_train_cases_0716.csv'
+rows=list(csv.DictReader(open(CSVP,encoding='utf-8')))
+assert len(rows)==8582, f'rows {len(rows)}'
+assert all(('hard_score' in r and 'caption_aug_prob' in r and 'caption_aug_repeats' in r)
+           for r in rows), '재가중 필드 누락'
+rep=[min(max(int(float(r.get('caption_aug_repeats',1))),1),5) for r in rows]
 print('OK repeats', dict(sorted(collections.Counter(rep).items())), '| expanded', sum(rep))
 PY
 ```
@@ -434,7 +402,7 @@ unzip -qo /workspace/snuai_code_0717.zip -d /workspace/code
 python - << 'PY'
 import yaml; c=yaml.safe_load(open('/workspace/code/configs/sft_qwen8b_v2_runpod.yaml'))
 assert c['output_dir'].endswith('qwen3vl8b_0717') and c['data']['hard_aug_max_repeats']==5
-assert c['data'].get('hard_cases_path') is None   # Variant A 전제
+assert c['data'].get('hard_cases_path'), 'hard_cases_path 오버레이 미지정'
 print('v2 config OK')
 PY
 ```
@@ -443,7 +411,7 @@ PY
 
 ```bash
 CFG=configs/sft_qwen8b_v2_runpod.yaml
-SFT=/workspace/code/outputs/sft_train_llm_aug_hard_0717.jsonl   # Variant B면 ..._hard_nogate.jsonl
+SFT=/workspace/code/outputs/sft_train.jsonl   # 클린 데이터 + config의 hard_cases_path 오버레이
 python -m cloud.runpod_train --config $CFG --sft-jsonl $SFT --smoke
 python -m cloud.runpod_train --config $CFG --sft-jsonl $SFT --per-device-batch 2 --grad-accum 8
 ```
@@ -491,3 +459,107 @@ python -m src.infer.aggregate --raw /workspace/snuai/outputs/raw_test_0717.jsonl
 LB > 0.90052면 0717을 최종 라인으로, 아니면 0716 유지(단일 체크포인트 규정 — 최종 선택은 하나).
 종료 후 `qwen3vl8b_0717/lora` 백업(tar) 다운로드, raw/pred/영수증 회수, 결과를
 README_no_ordering.md·reports에 기록.
+
+---
+
+# 8. Phase 2 — 클린 SFT 재학습 → GRPO (EM + pairwise 보상)
+
+전제·배경: 외부 LLM 캡션 증강이 규칙 위반으로 철회됐고, 기존 최고 체크포인트(0716)는 LLM
+증강 데이터로 학습된 오염 모델이다. 따라서 **클린 데이터(`sft_train.jsonl`)로 8B SFT를 다시
+돌리고(G1)**, 그 위에 GRPO로 EM을 직접 최적화한다(G3~G4). GRPO 보상은 EM + pairwise shaping
+(6쌍 일치 수를 우연 수준으로 센터링, λ=0.25)이며, 전멸 그룹에서도 학습 신호를 살린다.
+로직·근거는 `src/train/rewards.py`·`src/eval/pairwise_stats.py`, 보상은 프레임워크 비의존.
+
+## 8.0 게이트 요약
+
+- **Gate A** (클린 SFT): merged 클린 모델 val EM이 0716 기록(EM 0.5782) 대비 **−2pt 이내**면
+  GRPO 진행. 그 이상 하락 시 `caption_aug_prob`/epoch 조정 후 재시도(LLM 증강분 손실은 불가피 —
+  GRPO가 회복 수단).
+- **Gate B** (스모크): `grpo_smoke.py` 통과 + 로그에 `rewards/grpo_em_reward`와
+  `rewards/grpo_pairwise_reward`가 **개별 표시** + 파싱 성공률 ≥ 95%.
+- **Gate C** (GRPO): GRPO val EM ≥ 클린 SFT val EM일 때만 제출. `identity_rate ∈ [0.13, 0.19]`로
+  붕괴 재발 없음 확인.
+
+## 8.1 G1) 클린 SFT 재학습 [RunPod]
+
+```bash
+CFG=configs/sft_qwen8b_runpod.yaml
+SFT=/workspace/code/outputs/sft_train.jsonl        # 클린 데이터 (외부 LLM 증강 없음)
+python -m cloud.runpod_train --config $CFG --sft-jsonl $SFT --smoke
+python -m cloud.runpod_train --config $CFG --sft-jsonl $SFT --per-device-batch 2 --grad-accum 8
+# 병합
+python -m cloud.runpod_merge \
+  --lora /workspace/snuai/outputs/qwen3vl8b_0716/lora \
+  --out  /workspace/snuai/models/qwen3vl8b_clean_merged
+```
+
+## 8.2 Gate A) 클린 SFT val 평가
+
+```bash
+MODEL=/workspace/snuai/models/qwen3vl8b_clean_merged
+python -m src.infer.predict --model $MODEL --split train --fold val \
+  --style plain --tta 8 --batch 16 --out /workspace/snuai/outputs/raw_val_clean.jsonl
+python -m src.infer.aggregate --raw /workspace/snuai/outputs/raw_val_clean.jsonl \
+  --out /workspace/snuai/outputs/pred_val_clean.csv
+python -m src.eval.em --pred /workspace/snuai/outputs/pred_val_clean.csv --fold val
+# 판정: EM ≥ 0.5582 (0716−2pt) → G2 진행. 이 val EM을 GRPO 후 Gate C 기준선으로 기록.
+```
+
+## 8.3 G2) 클린 모델로 hard-case 재채굴 (선택 — GRPO hard 오버샘플용)
+
+```bash
+python -m src.infer.predict --model $MODEL --split train --fold train \
+  --style plain --tta 4 --batch 16 --out /workspace/snuai/outputs/raw_trainfold_clean.jsonl
+python -m src.infer.aggregate --raw /workspace/snuai/outputs/raw_trainfold_clean.jsonl \
+  --out /workspace/snuai/outputs/pred_trainfold_clean.csv
+python -m src.eval.em --pred /workspace/snuai/outputs/pred_trainfold_clean.csv --fold train
+python -m src.preprocess.hard_cases --pred /workspace/snuai/outputs/pred_trainfold_clean.csv \
+  --fold train --out /workspace/snuai/outputs/hard_train_cases_clean.csv
+# 로컬에서 λ 재확인 (오답 일치쌍 분포):
+#   python -m src.eval.pairwise_stats --cases outputs/hard_train_cases_clean.csv
+# 이 CSV를 configs/grpo_qwen8b_runpod.yaml의 data.hard_cases_path에 지정 (주석 해제).
+```
+
+## 8.4 Gate B) GRPO 스모크 [RunPod A100]
+
+> 전제: `trl`·`datasets` 설치됨(§1). 없으면 `ModuleNotFoundError: trl`로 스모크가 즉시 죽는다.
+
+```bash
+CFG=configs/grpo_qwen8b_runpod.yaml         # model: qwen3vl8b_clean_merged
+python -m cloud.grpo_smoke --config $CFG --limit 32
+# 통과 후 직렬화 스케일 확인 (PIL 인라인 Arrow 병목 조기 노출):
+python -m cloud.grpo_smoke --config $CFG --limit 256
+# 판정: 루프 진입·생성 OOM 없음 + 로그에 두 보상 성분 개별 표시 + 파싱 성공률 ≥ 95%.
+# 실패 유형(버전 비호환·vLLM 필수·PIL 직렬화)이 여기서 확정된다.
+```
+
+## 8.5 G4) GRPO 본 학습 [RunPod A100]
+
+```bash
+python -m cloud.grpo_train --config configs/grpo_qwen8b_runpod.yaml \
+  --sft-jsonl /workspace/code/outputs/sft_train.jsonl
+# 끊기면 --resume 추가. 산출: /workspace/snuai/outputs/qwen3vl8b_grpo/lora
+python -m cloud.runpod_merge --lora /workspace/snuai/outputs/qwen3vl8b_grpo/lora \
+  --out /workspace/snuai/models/qwen3vl8b_grpo_merged
+```
+
+학습 중 감시: `rewards/grpo_em_reward`가 상승하는가(EM 직접 최적화 성사), `rewards/grpo_pairwise_reward`가
+너무 앞서면 λ 하향; `log_completions`로 identity 표류·파싱 실패 육안 확인.
+
+## 8.6 Gate C) GRPO val 평가 → 제출
+
+```bash
+GM=/workspace/snuai/models/qwen3vl8b_grpo_merged
+python -m src.infer.predict --model $GM --split train --fold val \
+  --style plain --tta 8 --batch 16 --out /workspace/snuai/outputs/raw_val_grpo.jsonl
+python -m src.infer.aggregate --raw /workspace/snuai/outputs/raw_val_grpo.jsonl \
+  --out /workspace/snuai/outputs/pred_val_grpo.csv
+python -m src.eval.em --pred /workspace/snuai/outputs/pred_val_grpo.csv --fold val
+# 판정: GRPO val EM ≥ 클린 SFT val EM(§8.2) 그리고 identity_rate ∈ [0.13, 0.19] → C2 제출.
+python -m src.infer.predict --model $GM --split test \
+  --style plain --tta 8 --batch 16 --out /workspace/snuai/outputs/raw_test_grpo.jsonl
+python -m src.infer.aggregate --raw /workspace/snuai/outputs/raw_test_grpo.jsonl \
+  --submission /workspace/snuai/outputs/submission_grpo.csv
+```
+
+단일 체크포인트 규정: 최종 제출은 클린 SFT vs GRPO 중 val이 높은 **하나**만 선택한다.

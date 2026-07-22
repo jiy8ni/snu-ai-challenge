@@ -1,9 +1,9 @@
 """Rule-based caption augmentation for temporal connectives.
 
-This module is the rule-based caption augmenter.  LLM paraphrases are generated
-offline by ``src.preprocess.llm_caption_augment`` and then consumed by the
-training dataset through the ``caption_llm_variants`` field.  Every rewrite
-here must round-trip through ``caption_events.split_events`` unchanged.
+This module is the rule-based caption augmenter and the only caption
+augmentation path in use (external-LLM paraphrase augmentation was withdrawn
+per competition rules).  Every rewrite here must round-trip through
+``caption_events.split_events`` unchanged.
 
 연결어 풀은 파서(``caption_events._SEQ_SPLIT`` / ``_MID_AFTER`` /
 ``_LEADING_AFTER``)가 인식하는 형태만 렌더한다: ``then`` / ``followed by`` /

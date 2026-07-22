@@ -161,7 +161,7 @@ Answer: [1, 2, 3, 4]
 
 - **설정 파일**: `configs/sft_qwen8b.yaml` (Colab용) / `configs/sft_qwen8b_runpod.yaml` (RunPod용)
   - 핵심 두 줄: `data.style: plain`, `data.identity_prior: 0.155`
-- **학습 데이터**: `outputs/sft_train_llm_aug_hard_nogate.jsonl` (팀 캡션 증강본, 그대로 사용)
+- **학습 데이터**: `outputs/sft_train.jsonl` (클린 SFT 데이터 — 외부 LLM 증강 없음. 캡션 다양성은 학습 시점 규칙 기반 변형으로만)
 - **Colab에서**: `colab/qwen_vl_colab_0716.ipynb` 를 셀 순서대로 실행
 - **RunPod에서**: `docs/runpod.md` 의 **§7** (노트북 셀을 터미널 명령으로 옮겨둠)
 

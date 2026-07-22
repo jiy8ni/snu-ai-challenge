@@ -1,12 +1,10 @@
 # RunPod 버전 — Qwen3-VL-8B QLoRA SFT, **Phase 1.5 재채굴 부스팅 (_0717)**
 #
-# 0716 레시피(configs/sft_qwen8b_runpod.yaml)에서 **데이터 가중치만** 바꾼다
-# (단일변수 원칙): hard_aug_max_repeats 1->5, 가중치 소스는 plain 모델 자신의
-# train-fold 오답 재채굴(outputs/hard_train_cases_0716.csv, docs/runpod.md §7.8/§7.9).
-#   - Variant A(기본): --sft-jsonl outputs/sft_train_llm_aug_hard_0717.jsonl
-#     (재가중 필드가 레코드에 병합돼 있어 hard_cases_path 불필요)
-#   - Variant B(zero-API): --sft-jsonl은 0716 전달본 그대로 두고 아래
-#     hard_cases_path 주석을 해제해 CSV 오버레이로 덮어쓴다.
+# 클린 SFT 레시피(configs/sft_qwen8b_runpod.yaml)에서 **데이터 가중치만** 바꾼다
+# (단일변수 원칙): hard_aug_max_repeats 1->5, 가중치 소스는 클린 모델 자신의
+# train-fold 오답 재채굴(hard_train_cases_clean.csv, docs/runpod.md §8).
+# --sft-jsonl은 클린 데이터 outputs/sft_train.jsonl 그대로 두고, 아래 hard_cases_path
+# 주석을 해제해 재채굴 CSV 오버레이로 재가중 필드를 덮어쓴다 (외부 LLM 증강 없음).
 #
 # 큰 산출물은 전부 /workspace/snuai 아래에 둬 root disk quota 초과를 피한다.
 model: unsloth/Qwen3-VL-8B-Instruct   # 원본 공개 2025-10-15 (<=2026-05-31 규정 충족)
@@ -53,13 +51,11 @@ data:
   letterbox_crop: true
   perm_augment: true             # plain이면 augment_perm_truthful (라벨 항상 진실)
   oversample_no_ordering: 1      # plain에선 반드시 1 (identity 비중은 identity_prior가 전담, 이중 부스팅 금지)
-  caption_aug_prob: 0.45
-  caption_aug_source: mix        # rule variants + caption_llm_variants
-  llm_caption_field: caption_llm_variants
-  # Variant B 전용 — CSV가 caption_aug_repeats/prob/hard_score를 레코드 위에 덮어쓴다
-  # (vl_dataset._load_hard_case_overrides 허용 키 4종). Variant A에선 반드시 주석 유지.
-  # hard_cases_path: /workspace/snuai/outputs/hard_train_cases_0716.csv
+  caption_aug_prob: 0.45         # rule 기반 캡션 변형 확률 (외부 LLM 증강은 철회)
+  # CSV가 caption_aug_repeats/prob/hard_score를 레코드 위에 덮어쓴다
+  # (vl_dataset._load_hard_case_overrides 허용 키 3종). 클린 재채굴 CSV를 지정한다.
+  # hard_cases_path: /workspace/snuai/outputs/hard_train_cases_clean.csv
   hard_aug_repeats_field: caption_aug_repeats
   hard_aug_max_repeats: 5        # **Phase 1.5의 유일한 레시피 변경.** 새 채굴 repeats(1..5)를
-                                 # 물리 복제로 반영 — 0716은 1(off)이었다(구 tta1 채굴 아티팩트라).
-                                 # 이번엔 이 모델 자신의 tta4 오답으로 재채굴한 가중치라 신뢰 가능.
+                                 # 물리 복제로 반영 — 클린 SFT v1은 1(off)이었다.
+                                 # 클린 모델 자신의 tta4 오답으로 재채굴한 가중치라 신뢰 가능.

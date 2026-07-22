@@ -41,8 +41,6 @@ data:
   letterbox_crop: true
   perm_augment: true
   oversample_no_ordering: 2
-  caption_aug_prob: 0.45
-  caption_aug_source: mix          # rule variants + caption_llm_variants when present
-  llm_caption_field: caption_llm_variants
+  caption_aug_prob: 0.45           # rule 기반 캡션 변형 확률 (외부 LLM 증강은 철회)
   hard_aug_repeats_field: caption_aug_repeats
   hard_aug_max_repeats: 5

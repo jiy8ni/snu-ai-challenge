@@ -1,9 +1,8 @@
 """hard_score → 증강 가중치 공유 수식 (stdlib 전용).
 
-hard_cases.py(pandas 의존)와 llm_caption_augment.py(RunPod에서 stdlib만으로
-실행되는 계약) 양쪽이 같은 수식을 쓰도록 한 곳에 둔다. 예전에는 두 파일이
-각자 수식을 들고 있어(max_extra_repeats vs max_repeats-1) 기본값에서만
-우연히 일치했다.
+hard_cases.py(재채굴 CSV 생성, pandas 의존)와 학습 시점 오버레이(vl_dataset의
+hard_cases_path)가 같은 수식을 쓰도록 한 곳에 둔다. 가중치는 전부 모델 자신의
+예측 기반이며 외부 API와 무관하다.
 """
 
 import math

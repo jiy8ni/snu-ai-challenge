@@ -93,7 +93,6 @@ def _load_hard_case_overrides(path):
         "caption_aug_repeats",
         "caption_aug_prob",
         "hard_score",
-        "caption_llm_variants",
     }
     for row in rows:
         sid = row.get("Id") or row.get("id")
@@ -103,24 +102,6 @@ def _load_hard_case_overrides(path):
             k: row[k] for k in allowed if k in row and row[k] not in ("", None)
         }
     return overrides
-
-
-def _normalise_variants(value):
-    if not value:
-        return []
-    if isinstance(value, list):
-        return [str(v).strip() for v in value if str(v).strip()]
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = [part.strip() for part in text.split("|||")]
-        if isinstance(parsed, list):
-            return [str(v).strip() for v in parsed if str(v).strip()]
-    return []
 
 
 def _expand_by_caption_repeats(records, field, max_repeats):
@@ -143,7 +124,6 @@ class VLSFTDataset:
     def __init__(
         self, jsonl_path, data_dir, style="mid", augment=True, crop=True, seed=42, limit=None,
         oversample_no_ordering=1, caption_aug_prob=0.0,
-        caption_aug_source="rule", llm_caption_field="caption_llm_variants",
         hard_cases_path=None, hard_aug_repeats_field="caption_aug_repeats",
         hard_aug_max_repeats=5, identity_prior=IDENTITY_PRIOR,
     ):
@@ -157,7 +137,6 @@ class VLSFTDataset:
         부스팅된다 — plain 레시피에선 identity 비중을 identity_prior가 전담하므로
         oversample_no_ordering=1(off)로 둘 것 (configs/sft_qwen8b.yaml 참조)."""
         assert 0.0 <= caption_aug_prob <= 1.0, "caption_aug_prob must be in [0, 1]"
-        assert caption_aug_source in ("rule", "llm", "mix"), "caption_aug_source must be rule|llm|mix"
         assert 0.0 <= identity_prior <= 1.0, "identity_prior must be in [0, 1]"
         self.records = load_records(jsonl_path)[: limit or None]
         overrides = _load_hard_case_overrides(hard_cases_path)
@@ -183,8 +162,6 @@ class VLSFTDataset:
         self.rng = random.Random(seed)
         self.caption_rng = random.Random(seed + 1000003)
         self.caption_aug_prob = caption_aug_prob
-        self.caption_aug_source = caption_aug_source
-        self.llm_caption_field = llm_caption_field
         self.identity_prior = identity_prior
 
     def __len__(self):
@@ -215,21 +192,14 @@ class VLSFTDataset:
         return {"messages": build_messages(images, caption, self.style, target)}
 
     def _sample_caption_variant(self, rec, caption):
-        variants = []
-        if self.caption_aug_source in ("llm", "mix"):
-            variants.extend(_normalise_variants(rec.get(self.llm_caption_field)))
-        if self.caption_aug_source in ("rule", "mix"):
-            variants.extend(caption_variants(caption))
-
+        # rule 기반 캡션 변형만 사용한다 (외부 LLM 증강은 대회 규칙상 철회).
         clean = []
         seen = {caption.strip()}
-        for variant in variants:
+        for variant in caption_variants(caption):
             variant = variant.strip()
             if variant and variant not in seen:
                 clean.append(variant)
                 seen.add(variant)
         if clean:
             return self.caption_rng.choice(clean)
-        if self.caption_aug_source == "rule":
-            return augment_caption(caption, self.caption_rng)
-        return caption
+        return augment_caption(caption, self.caption_rng)
