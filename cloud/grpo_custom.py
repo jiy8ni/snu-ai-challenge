@@ -121,6 +121,9 @@ def main():
                     help="gradient checkpointing 끔 — backward 가속. OOM 시 이 플래그 제거")
     ap.add_argument("--resume-lora", default=None,
                     help="저장된 LoRA 디렉토리(adapter_model.safetensors)에서 이어서 학습")
+    ap.add_argument("--skip-prompts", type=int, default=0,
+                    help="첫 에폭에서 셔플 후 앞 N개 프롬프트 건너뜀 — resume 시 이미 학습한 "
+                         "구간 재방문 방지 (N = 마지막 step × accum, seed 동일 전제)")
     args = ap.parse_args()
 
     from cloud.grpo_smoke import build_grpo_examples
@@ -169,7 +172,11 @@ def main():
 
     for epoch in range(args.epochs):
         order = list(range(len(examples)))
-        rng.shuffle(order)
+        rng.shuffle(order)   # seed 고정 → run마다 동일 순서 (skip-prompts 이어달리기의 전제)
+        if epoch == 0 and args.skip_prompts:
+            order = order[args.skip_prompts:]
+            print(f"skip: 앞 {args.skip_prompts}개 프롬프트 건너뜀 → 남은 {len(order)}개"
+                  f" (~{len(order) // args.accum} 스텝)")
         opt.zero_grad()
         for i, ei in enumerate(order):
             ex = examples[ei]

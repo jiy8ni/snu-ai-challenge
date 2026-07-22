@@ -176,10 +176,13 @@ python -m cloud.grpo_custom --limit 2000 \
 - `--no-grad-ckpt`: gradient checkpointing을 꺼서 backward의 activation 재계산 제거
   (30~40% 가속). A100 80GB + 8B 4bit면 감당 — **OOM이 나면 이 플래그만 빼면 원복**.
 
-중단·재개: `--save-steps`(기본 100)마다 `<out_dir>/lora`에 어댑터가 저장된다.
+중단·재개: `--save-steps`(기본 100)마다 `<out_dir>/lora`에 어댑터가 저장된다
+(`[checkpoint]` 로그, 같은 폴더 덮어쓰기 — 보관하려면 `cp -r`로 백업).
 `--resume-lora <out_dir>/lora`로 그 가중치에서 이어서 학습(옵티마이저 상태는 리셋 —
-이 규모에선 무시 가능). 2000개 완주는 필수가 아니다 — 중간 체크포인트로 언제든
-Gate C(val EM > 0.5687)를 재서 판정하면 된다.
+이 규모에선 무시 가능). **재개 시 `--skip-prompts N`을 함께 줄 것** — seed가 같아
+셔플 순서가 동일하므로 N = 마지막 step × accum(예: step 300 × 4 = 1200)을 건너뛰면
+이미 학습한 구간을 재방문하지 않고 남은 프롬프트만 돈다. 2000개 완주는 필수가
+아니다 — 중간 체크포인트로 언제든 Gate C(val EM > 0.5687)를 재서 판정하면 된다.
 
 보상 로직만은 로컬에서 테스트 가능:
 
