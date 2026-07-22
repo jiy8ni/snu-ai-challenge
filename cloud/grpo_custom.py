@@ -207,6 +207,7 @@ def main():
                 if step % args.save_steps == 0:
                     model.save_pretrained(os.path.join(out_dir, "lora"))
                     processor.save_pretrained(os.path.join(out_dir, "lora"))
+                    print(f"[checkpoint] step {step} → {os.path.join(out_dir, 'lora')}")
                 if args.max_steps and step >= args.max_steps:
                     break
         if args.max_steps and step >= args.max_steps:
