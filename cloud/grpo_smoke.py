@@ -78,12 +78,16 @@ def _assistant_text(messages):
     return str(content)
 
 
-def build_grpo_examples(cfg, jsonl_path, data_dir, limit):
+def build_grpo_examples(cfg, jsonl_path, data_dir, limit, offset=0):
     """SFT 파이프라인으로 (prompt, true_rank) 쌍을 materialize.
 
     각 예제를 한 번만 뽑아 프롬프트(user 턴 = 이미지 4장 + plain 지시문)와 그 뷰의 진실
     rank(assistant 타깃의 Answer)를 **같은 호출에서** 고정한다 — 증강이 매 __getitem__마다
     재추출되므로 프롬프트와 라벨의 일관성을 위해 반드시 한 번에 분리한다.
+
+    offset: jsonl 앞 N개 레코드를 건너뛴다 — 이전 run이 --limit N으로 학습한 구간을 피해
+    "안 본 프롬프트"로 이어 학습할 때 사용 (예: offset=2000, limit=2500 → 레코드 2000~4499).
+    증강은 인덱스-결정적이라 슬라이스와 무관하게 동일 뷰가 나온다.
     """
     from src.train.targets import IDENTITY_PRIOR
     from src.train.vl_dataset import VLSFTDataset
@@ -92,13 +96,14 @@ def build_grpo_examples(cfg, jsonl_path, data_dir, limit):
     ds = VLSFTDataset(
         jsonl_path, data_dir,
         style=d["style"], augment=d["perm_augment"], crop=d["letterbox_crop"],
-        seed=cfg["train"]["seed"], limit=limit,
+        seed=cfg["train"]["seed"], limit=None if limit is None else offset + limit,
         oversample_no_ordering=d.get("oversample_no_ordering", 1),
         caption_aug_prob=d.get("caption_aug_prob", 0.0),
         identity_prior=d.get("identity_prior", IDENTITY_PRIOR),
     )
+    assert offset < len(ds), f"offset {offset} >= 데이터 {len(ds)}개"
     examples = []
-    for i in range(len(ds)):
+    for i in range(offset, len(ds)):
         messages = ds[i]["messages"]
         true_rank = parse_permutation(_assistant_text(messages))
         assert true_rank is not None, f"타깃에서 rank 파싱 실패 (i={i})"

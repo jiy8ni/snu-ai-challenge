@@ -123,7 +123,10 @@ def main():
                     help="저장된 LoRA 디렉토리(adapter_model.safetensors)에서 이어서 학습")
     ap.add_argument("--skip-prompts", type=int, default=0,
                     help="첫 에폭에서 셔플 후 앞 N개 프롬프트 건너뜀 — resume 시 이미 학습한 "
-                         "구간 재방문 방지 (N = 마지막 step × accum, seed 동일 전제)")
+                         "구간 재방문 방지 (N = 마지막 step × accum, seed·limit 동일 전제)")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="jsonl 앞 N개 레코드 건너뛰고 시작 — 이전 run의 --limit 구간을 피해 "
+                         "안 본 프롬프트로 이어 학습 (--skip-prompts와 달리 데이터 자체를 슬라이스)")
     args = ap.parse_args()
 
     from cloud.grpo_smoke import build_grpo_examples
@@ -158,9 +161,9 @@ def main():
         set_peft_model_state_dict(model, load_file(sd_path))
         print(f"LoRA 이어서 학습: {args.resume_lora} (옵티마이저 상태는 새로 시작)")
 
-    examples = build_grpo_examples(cfg, sft, paths["data_dir"], args.limit)
-    print(f"GRPO(custom) 데이터셋: {len(examples)} 프롬프트 | K={args.num_generations} | "
-          f"reward_weights=[{w_em}, {w_pw}]")
+    examples = build_grpo_examples(cfg, sft, paths["data_dir"], args.limit, offset=args.offset)
+    print(f"GRPO(custom) 데이터셋: {len(examples)} 프롬프트 (offset {args.offset}) | "
+          f"K={args.num_generations} | reward_weights=[{w_em}, {w_pw}]")
 
     from unsloth import FastVisionModel
 
