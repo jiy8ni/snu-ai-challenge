@@ -8,6 +8,9 @@ models/*
 outputs/*
 !outputs/.gitkeep
 
+# Generated trainer artifacts
+unsloth_compiled_cache/
+
 # Python
 __pycache__/
 *.pyc
